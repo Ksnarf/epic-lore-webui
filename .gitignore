@@ -1,0 +1,20 @@
+# Environment / secrets - never commit a real .env
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs - internal process logs (operator names, local filesystem paths)
+# must never land in this public repo; keep them out entirely.
+/logs/
+*.log
+/log.log
+
+# Local working notes. Never committed - this repository is public.
+.local-notes/
