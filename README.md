@@ -76,6 +76,15 @@ See `tasks.md` for the full, ordered task list. In short, v1 targets:
   Anchorpoint.
 - `docs/research/epic-webui-signals.md` -- sourced findings on Epic's own
   web client roadmap and the server-side primitives this UI can build on.
+- `docs/design/api-contract.md` -- feature-by-feature RPC map, transport
+  recommendation (thin BFF), web-login gap, permissions-surface gap.
+- `docs/design/authz-integration.md` -- pinned-tag references into
+  `epic-lore-authz` for the auth integration points this UI needs.
+- `docs/design/build-deps.md` -- everything a fresh clone needs to build:
+  proto source, authz integration, doc reading order.
+- `proto/vendor/lore/` -- the `lore` `.proto` files this UI/BFF generates
+  clients from, vendored verbatim under their upstream MIT license; see
+  `proto/vendor/lore/PROVENANCE.md` for the pinned commit and file list.
 - `tasks.md` -- v1 scope as ordered tasks, plus pre-work (API contract
   study, stack decision).
 - `log.log` -- append-only local work log. Not committed (see

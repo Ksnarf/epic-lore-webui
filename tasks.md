@@ -23,6 +23,31 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       `[code-says]` not `[verified-e2e]` because a study document has no
       runtime/build to execute. Downstream task notes below updated to
       reflect what this study changed.
+- [x] [verified-e2e] Build materials assembled: vendored the nine `lore`
+      protos this UI/BFF needs client generation for (`thin_client`,
+      `thin_client/v1/model`, `repository.v1`, `revision.v1`, `model.v1`,
+      `lock`, the live `lore.notification` (`lore_notification.proto`, not
+      legacy `urc.notification` -- per the API contract study), `auth_api`,
+      `rebac_api`, plus the legacy `model.proto` transitive dependency)
+      verbatim under `proto/vendor/lore/`, license call: MIT (confirmed by
+      reading `~/Documents/epic-lore/LICENSE` -- "MIT License, Copyright (c)
+      2026 Epic Games, Inc.") permits verbatim redistribution, so vendored
+      rather than fetch-scripted; pinned to upstream commit
+      `4ed62928ecb0f960e3e310d918ea6774b0beeb86` (2026-09-01), documented in
+      `proto/vendor/lore/PROVENANCE.md` (upstream URL, commit, file list,
+      import graph). Added `docs/design/authz-integration.md` (pinned-tag
+      `v0.2.0` references into `epic-lore-authz`'s `grpc.rs`/`http.rs`/
+      `oidc_login.rs`/`admin/auth.rs`, no source copied) and
+      `docs/design/build-deps.md` (fresh-clone build requirements, proto
+      source, authz integration, doc reading order). Evidence: `npx -p
+      protobufjs-cli pbjs -t json -p proto/vendor/lore -o
+      /tmp/lore-protos.json` against all nine vendored files succeeded,
+      producing a single valid descriptor JSON with packages `lore`, `urc`,
+      `epic_urc`, `google` (well-known types) and no missing-import errors
+      -- proves the vendored set is complete and self-contained against its
+      own import graph. `[verified-e2e]` scoped to "these protos compile
+      from this vendored tree," not an application build (no application
+      code exists yet -- see the stack decision below, still open).
 - [ ] Stack / bootstrap decision -- **marked for Kilo review before code
       starts.** React + TypeScript is proposed (see README, "Planned
       stack"), following Epic's own Horde dashboard as precedent. Still
