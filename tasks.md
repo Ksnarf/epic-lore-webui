@@ -47,21 +47,25 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       -- proves the vendored set is complete and self-contained against its
       own import graph. `[verified-e2e]` scoped to "these protos compile
       from this vendored tree," not an application build (no application
-      code exists yet -- see the stack decision below, still open).
-- [ ] Stack / bootstrap decision -- **marked for Kilo review before code
-      starts.** React + TypeScript is proposed (see README, "Planned
-      stack"), following Epic's own Horde dashboard as precedent. Still
-      open: build tooling (e.g. Vite vs. other), routing, state management,
-      component library, how auth handoff to `epic-lore-authz` is
-      implemented on the frontend, **and now also (per the API contract
-      study, `docs/design/api-contract.md` section 2): a thin BFF
-      (Node/TS recommended) as a new, separate component the browser talks
-      to instead of speaking grpc-web directly to `lore-server`/
-      `epic-lore-authz`** -- its own repo-or-package decision and how it
-      deploys alongside the frontend. "gRPC-web client generation" from the
-      original framing is superseded by "BFF client generation" under this
-      recommendation. Do not scaffold code against any of this until Kilo
-      has signed off on it.
+      code exists yet -- see the stack decision above, now closed).
+- [x] [code-says] Stack / bootstrap decision -- approved by Kilo
+      2026-09-20. Recorded in `docs/design/stack-decision.md`: Vite SPA
+      (static output, no Next.js server half) + React Router v7 (library
+      mode); TanStack Query for RPC data, Zustand for cross-cutting UI
+      state; headless primitives (Radix/shadcn-style) + Tailwind, with the
+      branch graph, file tree, and diff pane purpose-built; BFF is Fastify
+      (buf-generated gRPC clients, server-side only, hex-encoded bytes at
+      the JSON boundary, SSE for streaming, `/api/admin/*` proxy); auth is
+      BFF-side OIDC/PKCE against Okta with an encrypted `HttpOnly` cookie
+      session; asset preview (task 4) is BFF-minted presigned URLs off a
+      service-account credential; one repo, pnpm workspaces
+      (`apps/web`, `apps/bff`, `packages/lore-client`, `packages/api-types`),
+      one deploy container, Node 22 LTS pinned. Also records a newly
+      verified finding: `epic-lore-authz`'s `ExchangeExternalTokenForUserToken`
+      RPC is an unimplemented stub with no Okta/OIDC token type designed
+      for it, confirmed against a local checkout -- see task 8 below.
+      `[code-says]` not `[verified-e2e]`: this is a decision record with no
+      code to run yet; downstream task notes updated to reflect it.
 
 ## v1 scope
 
@@ -83,7 +87,13 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       `GET /v1/repository/{id}/content/{address}` call with the user's own
       bearer token, with the BFF (see pre-work stack decision) minting an
       actual presigned URL only when a shareable, credential-free link is
-      needed.
+      needed. **Ruling (`docs/design/stack-decision.md`, "Asset preview"):**
+      this is now the standard path, not an edge case -- the BFF holds a
+      service-account credential, checks the user's permission via
+      `CheckUserPermission`, mints the presigned URL, and the browser
+      fetches bytes directly from `lore-server`; no bearer token is ever
+      held by the browser. Provisioning that `lore` service account is a
+      named v1 dependency (see stack-decision.md, "Upstream dependencies").
 - [ ] 5. Lock management across all branches, via `urc.lock` -- exceeds
       GitLab's lock support (Premium-tier-only per the competitor analysis)
 - [ ] 6. Change-request review flow with inline comments, built on
@@ -117,7 +127,19 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       current state-bound SP-initiated flow (which correctly rejects any
       request with no pre-existing session). Both need design + security
       review on `epic-lore-authz` before this task can start; not
-      resolved by this study.
+      resolved by this study. **VERIFIED (`docs/design/stack-decision.md`,
+      "Critical verified finding"):** the (a)-side blockage above is no
+      longer speculative -- `ExchangeExternalTokenForUserToken` is
+      confirmed an unimplemented stub (`Status::unimplemented`,
+      `epic-lore-authz` `crates/lore-authz-server/src/grpc.rs:235-241`,
+      verified 2026-09-20 against local checkout `4726ad6`, 7 doc-only
+      commits ahead of the pinned `v0.2.0`), and its design
+      (`docs/architecture.md:129-137`) only proposes `api-key`,
+      `github-actions`, and `lore` token types -- no Okta/OIDC ID token
+      type. Web login cannot delegate token minting to that RPC today;
+      this is a verified upstream Phase 1b dependency on `epic-lore-authz`
+      (new/extended token type or a dedicated web-login endpoint, plus
+      security review), not just a documented gap.
 - [ ] 9. Permissions view backed by `epic-lore-authz` roles/grants. API
       contract study (`docs/design/api-contract.md` section 4): a "my
       permissions" view is fully supported today via
