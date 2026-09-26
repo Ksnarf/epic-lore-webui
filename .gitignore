@@ -18,3 +18,20 @@ Thumbs.db
 
 # Local working notes. Never committed - this repository is public.
 .local-notes/
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+apps/web/dist/
+apps/bff/dist/
+
+# buf-generated gRPC clients (packages/lore-client) - generate-on-build,
+# not committed. See packages/lore-client/buf.gen.yaml + `pnpm run generate`.
+packages/lore-client/src/gen/
+
+# TS build info
+*.tsbuildinfo

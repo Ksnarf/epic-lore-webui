@@ -67,6 +67,84 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       `[code-says]` not `[verified-e2e]`: this is a decision record with no
       code to run yet; downstream task notes updated to reflect it.
 
+- [x] [verified-e2e] Monorepo skeleton scaffolded per
+      `docs/design/stack-decision.md` (pnpm workspaces: `apps/web` Vite +
+      React + TS SPA with Tailwind, React Router v7 library mode
+      (`react-router@7.18.4`, not the now-latest v8 on npm -- pinned to
+      match the approved decision), TanStack Query provider, Zustand store
+      stub; `apps/bff` Fastify with `@fastify/cookie`,
+      `@fastify/csrf-protection`, `@fastify/static` (serving
+      `apps/web/dist` same-origin), `/healthz` + placeholder `/api/`
+      routes, OIDC/session/admin-proxy/SSE stubbed with TODOs referencing
+      tasks 8/9/10; `packages/api-types` owns the hex-bytes `bytes`-field
+      convention (`encodeHexBytes`/`decodeHexBytes`/`isHexBytes`) plus the
+      `/healthz` contract type; `packages/lore-client` does buf-based
+      codegen (`buf.gen.yaml`, `protoc-gen-es` v2 -- not the older
+      `protoc-gen-connect-es`, which still pins `@bufbuild/protobuf` v1 and
+      would conflict with the v2 runtime used here) against
+      `proto/vendor/lore`, generate-on-build, generated `src/gen/`
+      gitignored, plus a thin `createLoreTransport` factory and nothing
+      else hand-written; root ESLint flat config enforces the
+      `apps/web` -> `packages/lore-client` import ban via
+      `no-restricted-imports`; Node 22 LTS pinned via `.nvmrc` +
+      `engines` in every `package.json`. Evidence (all real commands, run
+      2026-09-25/26):
+      - `pnpm install`: succeeded, 389 packages added (pnpm itself was not
+        preinstalled in the environment -- installed via
+        `npm install -g pnpm`, giving a real pnpm 12.6.0 binary, not an
+        npm-as-pnpm substitution; `@bufbuild/buf`/`esbuild` postinstall
+        scripts approved via `pnpm-workspace.yaml`'s `allowBuilds`).
+      - `pnpm run typecheck`: `pnpm -r run typecheck` exits 0 across all 4
+        buildable workspaces (`packages/api-types`, `packages/lore-client`,
+        `apps/web`, `apps/bff`).
+      - `pnpm run build`: exits 0; `apps/web build` produces
+        `apps/web/dist/{index.html,assets/*.js,assets/*.css}` via a real
+        Vite production build; `apps/bff build` produces
+        `apps/bff/dist/server.js` via `tsc`.
+      - buf generate: `packages/lore-client`'s `pnpm run generate` (`buf
+        generate`, using the `@bufbuild/buf` npm package's binary --
+        no system/brew `buf` available in this environment) ran against
+        `proto/vendor/lore` and produced real `.ts` output under
+        `packages/lore-client/src/gen/` (`auth_api_pb.ts`, `lock_pb.ts`,
+        `model_pb.ts`, `rebac_api_pb.ts`, `lore_notification_pb.ts`, plus
+        `lore/{model,repository,revision,thin_client}/v1/*_pb.ts`) -- this
+        is real generated code, not faked.
+      - BFF boot proof: started `node apps/bff/dist/server.js` on
+        `PORT=3055`, `curl -i http://localhost:3055/healthz` returned
+        `HTTP/1.1 200 OK` with body
+        `{"status":"ok","service":"epic-lore-webui-bff","timestamp":"2026-09-26T06:20:14.805Z"}`,
+        then the process was killed and a follow-up curl confirmed
+        connection-refused (server actually stopped, not left running).
+      - ESLint boundary rule proof (not just "lint passes because nothing
+        imports it yet"): temporarily added a file under `apps/web/src`
+        importing `@epic-lore-webui/lore-client` -- `pnpm run lint` failed
+        with a `no-restricted-imports` error naming that exact import;
+        file removed immediately after, `pnpm run lint` back to exit 0.
+      - `pnpm run lint`: exits 0 on the real scaffold (post boundary-rule
+        proof above).
+      `[verified-e2e]` scoped to what was actually run: install, typecheck,
+      build, buf generate, one BFF boot+curl+stop cycle, and one ESLint
+      boundary-rule trip. Not implied "verified": no v1 feature work exists
+      yet to verify (by design -- scaffold only, per this task's scope).
+      Interpretation calls made beyond the decision doc's text: (1)
+      `react-router` pinned to the v7.18.4 line explicitly, since npm's
+      current `latest` for that package is now v8 and the decision doc
+      names v7 specifically; (2) `packages/lore-client`'s buf codegen uses
+      only `protoc-gen-es` v2 (no `protoc-gen-connect-es`) because that
+      older plugin is incompatible with the `@bufbuild/protobuf` v2 /
+      `@connectrpc/connect` v2 line the decision doc specifies -- protoc-gen-es
+      v2 generates both messages and service descriptors itself; (3)
+      `packages/api-types` and `packages/lore-client`'s `typecheck` scripts
+      do a real `tsc` emit (not `--noEmit`) because `apps/bff`/`apps/web`
+      resolve their workspace `.d.ts` files from `dist/`, not from
+      TS project references -- a `--noEmit` typecheck of a dependency
+      package left dependents unable to resolve its types; (4) Node 22 LTS
+      is pinned in `.nvmrc`/`engines` per the decision doc, but this
+      environment's actual Node is v26.7.0 with no `nvm`/`volta`/`fnm`
+      available to install/switch to 22 -- all verification above therefore
+      ran on Node v26.7.0, not the pinned 22 LTS; this is an environment gap
+      to close before real CI, not a scaffold defect.
+
 ## v1 scope
 
 - [ ] 1. Repo browse + file tree

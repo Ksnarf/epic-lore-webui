@@ -1,0 +1,18 @@
+# Codegen config for packages/lore-client (docs/design/stack-decision.md,
+# "BFF" section: "buf plus @bufbuild/protobuf and @connectrpc/connect-node's
+# createGrpcTransport, generating server-side-only clients against the
+# vendored protos in proto/vendor/lore/").
+#
+# protoc-gen-es v2 generates both message types and service descriptors
+# (GenService) in one step -- no separate protoc-gen-connect-es plugin is
+# needed for the @bufbuild/protobuf v2 / @connectrpc/connect v2 line; that
+# plugin is the older v1-line codegen path and pins @bufbuild/protobuf ^1.x,
+# which would conflict with the v2 runtime used here.
+version: v2
+plugins:
+  - local: protoc-gen-es
+    out: src/gen
+    opt:
+      - target=ts
+inputs:
+  - directory: ../../proto/vendor/lore

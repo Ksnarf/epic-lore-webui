@@ -1,0 +1,5 @@
+dist
+build
+node_modules
+packages/lore-client/src/gen
+pnpm-lock.yaml
