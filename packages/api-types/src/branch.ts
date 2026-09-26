@@ -23,6 +23,18 @@ import type { HexBytes } from "./hex-bytes.js";
  * against `Repository.default_branch_id`. This is a real gap in the RPC
  * surface, not a client-side convenience.
  */
+/**
+ * Mirrors `lore.model.v1.BranchPoint`: one entry in a branch's ancestry
+ * chain. `revisionSignature` is a signature only -- the *number* of that
+ * revision on `branchId` is not carried on the wire here; a consumer that
+ * needs it (v1 task 2's graph assembly, `apps/web/src/graph/*`) resolves it
+ * by matching this signature against `branchId`'s own loaded revisions.
+ */
+export interface BranchPointDto {
+  branchId: HexBytes;
+  revisionSignature: HexBytes;
+}
+
 export interface BranchSummary {
   id: HexBytes;
   name: string;
@@ -32,6 +44,15 @@ export interface BranchSummary {
   latest: HexBytes;
   deleted: boolean;
   isDefault: boolean;
+  /**
+   * Ancestry chain -- parent-first, root-last (`lore.model.v1.Branch.stack`'s
+   * own doc comment). Empty for a repository's own default/root branch.
+   * Added for v1 task 2 (revision history + multi-lane branch graph): the
+   * only wire-level signal of *where* a branch forked from another, needed
+   * to draw branch-point edges in the client-assembled DAG
+   * (docs/design/api-contract.md section 1 feature 2's gap note).
+   */
+  stack: BranchPointDto[];
 }
 
 /** Contract for `GET /api/repositories/:repositoryId/branches`. */

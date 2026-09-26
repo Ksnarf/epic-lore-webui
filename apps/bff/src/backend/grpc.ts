@@ -4,14 +4,23 @@ import { createLoreTransport } from "@epic-lore-webui/lore-client";
 import type { Branch, Repository } from "@epic-lore-webui/lore-client/gen/lore/model/v1/model_pb";
 import { RevisionIdentifierSchema } from "@epic-lore-webui/lore-client/gen/lore/model/v1/model_pb";
 import { RepositoryService } from "@epic-lore-webui/lore-client/gen/lore/repository/v1/repository_pb";
-import { RevisionService } from "@epic-lore-webui/lore-client/gen/lore/revision/v1/revision_pb";
+import { RevisionListRequestSchema, RevisionService } from "@epic-lore-webui/lore-client/gen/lore/revision/v1/revision_pb";
 import {
+  RevisionInfoRequestSchema,
   RevisionTreeRequestSchema,
   ThinClientService,
 } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
+import type { Revision } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
 import { filterBranchesForRepository } from "./branch-scope.js";
 import { NotFoundError } from "./errors.js";
-import type { LoreBackend, RevisionTreeParams, RevisionTreeResult } from "./types.js";
+import type {
+  LoreBackend,
+  RevisionInfoParams,
+  RevisionListParams,
+  RevisionListResult,
+  RevisionTreeParams,
+  RevisionTreeResult,
+} from "./types.js";
 
 /**
  * Real backend for v1 task 1, dialing `lore-server`'s native gRPC surface.
@@ -92,6 +101,48 @@ export function createGrpcBackend(addr: string): LoreBackend {
         throw new NotFoundError("RevisionTree stream produced no header (branch or revision not found)");
       }
       return { header, nodes };
+    },
+
+    async listRevisions(params: RevisionListParams): Promise<RevisionListResult> {
+      const request = create(RevisionListRequestSchema, {
+        start: params.cursor
+          ? { case: "signature", value: params.cursor }
+          : {
+              case: "identifier",
+              value: create(RevisionIdentifierSchema, { branchId: params.branchId, number: 0n }),
+            },
+      });
+      try {
+        const response = await revisionClient.revisionList(request);
+        return {
+          items: response.items,
+          signatureForward: response.signatureForward,
+          signatureBackward: response.signatureBackward,
+        };
+      } catch (err) {
+        if (isNotFound(err)) {
+          throw new NotFoundError("branch or revision cursor not found");
+        }
+        throw err;
+      }
+    },
+
+    async getRevisionInfo(params: RevisionInfoParams): Promise<Revision | null> {
+      const request = create(RevisionInfoRequestSchema, {
+        query: {
+          case: "identifier",
+          value: create(RevisionIdentifierSchema, { branchId: params.branchId, number: params.number }),
+        },
+      });
+      try {
+        const response = await thinClient.revisionInfo(request);
+        return response.revision ?? null;
+      } catch (err) {
+        if (isNotFound(err)) {
+          return null;
+        }
+        throw err;
+      }
     },
   };
 }

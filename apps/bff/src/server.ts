@@ -10,6 +10,7 @@ import { loadConfig } from "./config.js";
 import { registerHealthzRoute } from "./routes/healthz.js";
 import { registerApiRoutes } from "./routes/api.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
+import { registerRevisionRoutes } from "./routes/revisions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -69,6 +70,7 @@ export async function buildServer() {
     "lore backend selected",
   );
   registerRepositoryRoutes(app, backend);
+  registerRevisionRoutes(app, backend);
   registerApiRoutes(app);
 
   // TODO(task 8): OIDC/PKCE login + callback routes against Okta, per

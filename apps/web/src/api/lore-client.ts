@@ -2,6 +2,8 @@ import type {
   BranchListResponseBody,
   RepositoryGetResponseBody,
   RepositoryListResponseBody,
+  RevisionInfoResponseBody,
+  RevisionListResponseBody,
   RevisionTreeResponseBody,
 } from "@epic-lore-webui/api-types";
 
@@ -57,5 +59,44 @@ export function fetchRevisionTree(
   params.set("depth", String(depth));
   return getJson(
     `/api/repositories/${encodeURIComponent(repositoryId)}/branches/${encodeURIComponent(branchId)}/tree?${params.toString()}`,
+  );
+}
+
+/**
+ * One page of a branch's revision history (v1 task 2). `cursor` omitted
+ * resolves to the branch tip; pass a prior response's `signatureBackward`
+ * to fetch the next (older) page -- see `useRevisionsInfiniteQuery`
+ * (../queries/lore.ts), which drives this via TanStack Query's
+ * `useInfiniteQuery`.
+ */
+export function fetchRevisions(
+  repositoryId: string,
+  branchId: string,
+  cursor?: string,
+): Promise<RevisionListResponseBody> {
+  const params = new URLSearchParams();
+  if (cursor) {
+    params.set("cursor", cursor);
+  }
+  const query = params.toString();
+  return getJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/branches/${encodeURIComponent(branchId)}/revisions${query ? `?${query}` : ""}`,
+  );
+}
+
+/**
+ * The full record for one revision, including ancestry (`parentSelf`/
+ * `parentOther`) -- `number` "0" resolves to the branch tip. Used sparingly
+ * by the graph assembly (../graph/assemble-revision-graph.ts) to detect
+ * merges, since `RevisionItemDto` (the list-row projection above) carries
+ * no parent field at all.
+ */
+export function fetchRevisionInfo(
+  repositoryId: string,
+  branchId: string,
+  number: string,
+): Promise<RevisionInfoResponseBody> {
+  return getJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/branches/${encodeURIComponent(branchId)}/revisions/${encodeURIComponent(number)}`,
   );
 }

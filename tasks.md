@@ -258,7 +258,138 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       `LORE_BACKEND=grpc` curl sequence above once the demo stack is
       reachable and flip to `[x] [verified-e2e]` (or correct the ancestry
       assumption) based on what that shows.
-- [ ] 2. Revision history + multi-lane branch graph
+- [~] 2. Revision history + multi-lane branch graph. Implemented: BFF routes
+      `GET /api/repositories/:repositoryId/branches/:branchId/revisions?cursor=`
+      (cursor-paginated, `apps/bff/src/routes/revisions.ts`) and `GET
+      .../revisions/:number` (`:number` decimal, `0` = tip). `LoreBackend`
+      (apps/bff/src/backend/types.ts) extended with `listRevisions`
+      (`RevisionList`) and `getRevisionInfo` (`ThinClientService.RevisionInfo`),
+      implemented in both `backend/fixture.ts` and `backend/grpc.ts`.
+      `BranchSummary` (packages/api-types/src/branch.ts) extended with
+      `stack` (the branch's `BranchPoint[]` ancestry) so the web app can see
+      fork points -- task 1's DTO never needed to expose it. New
+      `packages/api-types/src/revision.ts`: `RevisionItemDto`/
+      `RevisionListResponseBody`/`RevisionDto`/`RevisionParentDto`/
+      `RevisionInfoResponseBody`. Web side: `useRevisionsInfiniteQuery`
+      (TanStack Query's `useInfiniteQuery`, apps/web/src/queries/lore.ts);
+      a pure, proto-agnostic lane-assignment module
+      (`apps/web/src/graph/lane-assignment.ts`, one lane per branch, opened
+      on first appearance and freed once a branch's loaded chain ends) with
+      3 passing vitest unit tests (linear chain, branch point, merge +
+      lane reuse -- `lane-assignment.test.ts`); a DAG-assembly module
+      (`apps/web/src/graph/assemble-revision-graph.ts` +
+      `use-revision-graph.ts`) that builds `GraphNode[]` from `BranchList`
+      + a per-branch `RevisionList` walk, per the design doc, plus one
+      addition the design doc didn't anticipate (see finding 1 below); a
+      custom SVG multi-lane graph (`apps/web/src/components/revision-graph.tsx`,
+      no charting library) and a row-aligned revision list
+      (`components/revision-list.tsx`, sharing `graph/layout.ts`'s row
+      height); a new deep-linkable route,
+      `/repositories/:repositoryId/branches/:branchId/history/*` (splat =
+      selected revision number), `apps/web/src/routes/branch-history.tsx`,
+      following task 1's splat-carries-selection pattern
+      (`branch-tree.tsx`). No diffs, locks, or auth touched.
+
+      **Fixture topology** (apps/bff/src/backend/fixture.ts): `epic-lore`'s
+      `main` branch got 25 real `lore.thin_client.v1.Revision` records
+      (`create(RevisionSchema, {...})`, not invented literals); `feature/
+      lazy-tree-loading` forks from `main` revision 12 (6 of its own
+      revisions) and `release/1.0` forks from `main` revision 18 (4 of its
+      own revisions) -- a genuine branch point, twice, with both branches
+      open concurrently (parallel lanes); `main`'s revision 25 (its tip) is
+      a real two-parent merge, `parent_self` continuing `main`'s own chain
+      and `parent_other` pointing at `feature`'s tip -- not a fast-forward.
+
+      **Three real findings made building this, none anticipated by
+      docs/design/api-contract.md or stack-decision.md:**
+
+      1. **`lore.model.v1.RevisionItem` (`RevisionList`'s lean row
+         projection) carries no parent/ancestry field at all -- not even for
+         merges.** Verified against `proto/vendor/lore/lore/model/v1/model.proto`
+         (`RevisionItem`: `number`, `signature`, `metadata`, `state` only)
+         vs. `proto/vendor/lore/lore/thin_client/v1/model.proto` (the full
+         `Revision`: `parent_self`/`parent_other`, only reachable via
+         `ThinClientService.RevisionInfo`). The design doc's gap note says
+         the graph is "assembled client-side from `BranchList` ... plus a
+         `RevisionList` walk" as if that pair were sufficient -- it is not:
+         that combination can reconstruct a branch's own linear chain and,
+         via `Branch.stack`, where it forked from, but it can **never**
+         reveal a merge; `parent_other` is the only wire signal a merge
+         exists at all. Worked around with a bounded addition: one
+         `RevisionInfo` call per *branch tip* shown in the graph (O(branches
+         displayed), never O(revisions)) -- `apps/web/src/graph/
+         use-revision-graph.ts`. This is a scoped compromise, not a complete
+         solution: a merge that isn't at whichever branch tip happens to be
+         loaded (e.g. deep in history, already superseded by later commits)
+         would not be detected without probing every revision, which this
+         implementation deliberately does not do.
+      2. **`RevisionItem` carries no timestamp**, so revisions from
+         different branches can't be interleaved into one global
+         chronological order client-side using `RevisionList` data alone.
+         `assemble-revision-graph.ts` sidesteps this by not needing a global
+         order at all: it emits each branch's own revisions as a contiguous
+         run (newest-to-oldest) and lets `lane-assignment.ts`'s one-lane-
+         per-branch model handle interleaving-independence -- correctness
+         doesn't depend on *which* branch's run comes first, only
+         readability does. Documented in both modules' top comments.
+      3. **`RevisionListResponse`'s own doc comment says a page's anchor
+         "is not necessarily items[0] -- the server may align the page on a
+         wider boundary... and return items both newer and older than the
+         anchor."** The fixture backend does not implement this: it always
+         anchors strictly at `items[0]` and returns a disjoint, non-
+         overlapping older page. This is a deliberate fixture
+         simplification, not a proven real-server behavior -- see "What is
+         NOT proven" below and packages/api-types/src/revision.ts's doc
+         comment.
+
+      Evidence (real commands, run 2026-09-26):
+      - `pnpm run typecheck`: exits 0 across all 4 workspaces.
+      - `pnpm run lint`: exits 0; re-proved the `no-restricted-imports`
+        boundary rule (temporarily added a `lore-client` deep-import under
+        `apps/web/src`, lint failed naming that exact import, file removed,
+        lint back to exit 0).
+      - `pnpm run build`: exits 0 across all 4 workspaces.
+      - `pnpm --filter @epic-lore-webui/web run test` (vitest, newly added
+        as a dev dependency -- none was configured before this task): 3/3
+        pass -- linear chain (single lane throughout), branch point
+        (forked branch gets a distinct lane while concurrently open, then
+        frees it, then a later independent branch reuses the freed lane),
+        merge (cross-branch connector resolves to the correct distinct
+        lane; both lanes eventually free and get reused, `laneCount`
+        stays 2 rather than growing unbounded).
+      - Booted the BFF in fixture mode (`PORT=3123 LORE_BACKEND=fixture
+        node apps/bff/dist/server.js`) and curled the real routes: `GET
+        .../branches/<main>/revisions` (no cursor) returned revisions
+        25..16 (numbers, all hex signatures) with
+        `signatureBackward=...03f7`; following that cursor,
+        `GET .../revisions?cursor=...03f7` returned revisions 15..6 -- a
+        disjoint, strictly-older page, proving pagination actually walks
+        forward and doesn't repeat. `GET .../revisions/0` (tip) on `main`
+        returned the real merge record: `parentSelf` -> main #24,
+        `parentOther` -> `feature`'s branch id, revision 6 -- proving the
+        merge fixture and the `RevisionInfo` route both work end-to-end.
+        `GET .../branches` showed `feature`/`release`'s `stack` pointing at
+        `main` with distinct fork-point signatures (#12 and #18
+        respectively, not the same placeholder signature task 1's fixture
+        used). Process killed afterward; confirmed stopped (`ps` empty,
+        follow-up curl connection-refused, exit code 7).
+
+      **What is NOT proven:** (a) the `grpc` backend's `listRevisions`/
+      `getRevisionInfo` were never exercised against a live `lore-server` --
+      only typechecked against the vendored proto types, same caveat task 1
+      already carries forward for its own gRPC path. (b) The fixture's
+      pagination windowing (strictly-anchored-at-`items[0]`, non-
+      overlapping pages) is a simplification -- finding 3 above -- and a
+      real server's actual windowing (and therefore whether the web client
+      needs signature-based de-duplication across pages) is unproven either
+      way. (c) The bounded per-branch-tip `RevisionInfo` merge-detection
+      heuristic (finding 1) has not been checked against a real repository
+      with a non-tip merge or a very branch-heavy history; `[~]` rather
+      than `[x]` for exactly this reason, same as task 1 -- re-run this
+      task's curl sequence once the demo stack is reachable, check whether
+      real `RevisionList` windowing matches the fixture's simplified model,
+      and flip to `[x] [verified-e2e]` (or correct the assumptions above)
+      based on what that shows.
 - [ ] 3. Side-by-side text diff + binary-aware diff (thumbnail/metadata/
       chunk-delta), via `ThinClientService.RevisionDiff` / `ContentDiff`
       (`lore.thin_client.v1`). API contract study

@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, RouterProvider } from "react-router";
+import { BranchHistoryRoute } from "./routes/branch-history.js";
 import { BranchTreeRoute } from "./routes/branch-tree.js";
 import { RepositoriesRoute } from "./routes/repositories.js";
 import { RepositoryBranchesRoute } from "./routes/repository-branches.js";
@@ -16,6 +17,7 @@ const queryClient = new QueryClient();
 const router = createBrowserRouter([
   { path: "/", element: <RepositoriesRoute /> },
   { path: "/repositories/:repositoryId", element: <RepositoryBranchesRoute /> },
+  { path: "/repositories/:repositoryId/branches/:branchId/history/*", element: <BranchHistoryRoute /> },
   { path: "/repositories/:repositoryId/branches/:branchId/*", element: <BranchTreeRoute /> },
 ]);
 

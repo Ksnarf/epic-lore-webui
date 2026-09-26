@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { FileTree } from "../components/file-tree.js";
 import { PageShell } from "../components/page-shell.js";
 import { useUiStore } from "../store/ui-store.js";
@@ -27,6 +27,12 @@ export function BranchTreeRoute() {
 
   return (
     <PageShell title="File tree" backTo={`/repositories/${repositoryId}`} backLabel="Branches">
+      <Link
+        to={`/repositories/${repositoryId}/branches/${branchId}/history`}
+        className="mb-4 inline-block text-sm text-slate-400 hover:text-slate-200"
+      >
+        View revision history &rarr;
+      </Link>
       <FileTree repositoryId={repositoryId} branchId={branchId} selectedPath={selectedPath} />
     </PageShell>
   );

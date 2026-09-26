@@ -10,7 +10,8 @@ import { BadRequestError, NotFoundError } from "../backend/errors.js";
 import type { LoreBackend } from "../backend/types.js";
 import { toBranchSummary, toRepositorySummary, toTreeNodeDto } from "../dto/lore.js";
 
-function parseHexId(value: string, label: string): Uint8Array {
+/** Shared with routes/revisions.ts (v1 task 2) -- same hex-id parsing convention, one place. */
+export function parseHexId(value: string, label: string): Uint8Array {
   try {
     return decodeHexBytes(value);
   } catch {
@@ -115,7 +116,8 @@ export function registerRepositoryRoutes(app: FastifyInstance, backend: LoreBack
   });
 }
 
-function handleRouteError(err: unknown, reply: import("fastify").FastifyReply) {
+/** Shared with routes/revisions.ts (v1 task 2) -- same BadRequestError/NotFoundError -> HTTP status mapping, one place. */
+export function handleRouteError(err: unknown, reply: import("fastify").FastifyReply) {
   if (err instanceof BadRequestError) {
     return reply.code(400).send({ error: err.message });
   }
