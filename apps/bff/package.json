@@ -13,6 +13,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "2.15.0",
+    "@connectrpc/connect": "^2.2.0",
     "@epic-lore-webui/api-types": "workspace:*",
     "@epic-lore-webui/lore-client": "workspace:*",
     "@fastify/cookie": "^11.1.2",

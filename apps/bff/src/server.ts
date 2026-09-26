@@ -4,8 +4,12 @@ import Fastify from "fastify";
 import fastifyCookie from "@fastify/cookie";
 import fastifyCsrf from "@fastify/csrf-protection";
 import fastifyStatic from "@fastify/static";
+import { createFixtureBackend } from "./backend/fixture.js";
+import { createGrpcBackend } from "./backend/grpc.js";
+import { loadConfig } from "./config.js";
 import { registerHealthzRoute } from "./routes/healthz.js";
 import { registerApiRoutes } from "./routes/api.js";
+import { registerRepositoryRoutes } from "./routes/repositories.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,6 +22,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST_DIR = path.resolve(__dirname, "../../web/dist");
 
 export async function buildServer() {
+  const config = loadConfig();
   const app = Fastify({ logger: true });
 
   await app.register(fastifyCookie);
@@ -30,12 +35,40 @@ export async function buildServer() {
 
   await app.register(fastifyStatic, {
     root: WEB_DIST_DIR,
-    // SPA fallback (React Router v7 library-mode client routing) is wired
-    // when apps/web has real routes to fall back to -- see task 1.
-    wildcard: false,
+    wildcard: true,
+  });
+
+  // SPA fallback: task 1's routes (repository -> branch -> path) are
+  // client-side React Router routes (docs/design/stack-decision.md,
+  // "Routing"). `@fastify/static`'s `wildcard: true` only serves files that
+  // actually exist under WEB_DIST_DIR and otherwise calls
+  // `reply.callNotFound()` (verified against its source -- its own docs'
+  // wording ("adds a wildcard route to serve files") reads like Express's
+  // history-API-fallback but isn't); it does not itself fall back to
+  // index.html. This handler is what actually makes a direct/reloaded deep
+  // link (e.g. `/repositories/<id>/branches/<id>/some/path`) work: any GET
+  // that isn't `/api/*` and didn't match a real static asset gets
+  // index.html, and the client-side router takes over from there. A
+  // missed `/api/*` route still 404s as JSON, not HTML.
+  app.setNotFoundHandler((request, reply) => {
+    if (request.method === "GET" && !request.url.startsWith("/api/")) {
+      return reply.sendFile("index.html");
+    }
+    return reply.code(404).send({ error: "not found" });
   });
 
   registerHealthzRoute(app);
+
+  // LORE_BACKEND selects the data source for v1 task 1 (repo browse + file
+  // tree); default "fixture" so the app runs with no lore-server reachable
+  // at all. See ./config.ts for the full env var contract.
+  const backend =
+    config.loreBackend === "grpc" ? createGrpcBackend(config.loreServerAddr) : createFixtureBackend();
+  app.log.info(
+    { loreBackend: config.loreBackend, loreServerAddr: config.loreServerAddr },
+    "lore backend selected",
+  );
+  registerRepositoryRoutes(app, backend);
   registerApiRoutes(app);
 
   // TODO(task 8): OIDC/PKCE login + callback routes against Okta, per
@@ -57,9 +90,8 @@ export async function buildServer() {
 
 async function main() {
   const app = await buildServer();
-  const port = Number(process.env.PORT ?? 3000);
-  const host = process.env.HOST ?? "0.0.0.0";
-  await app.listen({ port, host });
+  const config = loadConfig();
+  await app.listen({ port: config.port, host: config.host });
 }
 
 // Only run when executed directly (not when imported, e.g. by tests).

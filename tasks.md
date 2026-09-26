@@ -147,7 +147,117 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
 
 ## v1 scope
 
-- [ ] 1. Repo browse + file tree
+- [~] 1. Repo browse + file tree. Implemented: BFF routes `GET
+      /api/repositories`, `GET /api/repositories/:repositoryId`, `GET
+      /api/repositories/:repositoryId/branches`, `GET
+      /api/repositories/:repositoryId/branches/:branchId/tree?path=&depth=`
+      (`apps/bff/src/routes/repositories.ts`), backed by a `LoreBackend`
+      interface (`apps/bff/src/backend/types.ts`) with two implementations
+      selected by `LORE_BACKEND` (default `fixture`): `backend/fixture.ts`
+      (in-memory data built with the real generated proto message
+      constructors, `create(FooSchema, {...})` against
+      `proto/vendor/lore`, not invented object literals) and
+      `backend/grpc.ts` (real `@connectrpc/connect-node` gRPC client,
+      dialing `LORE_SERVER_ADDR`, default `localhost:41337`). Web side:
+      three React Router v7 routes
+      (`/`, `/repositories/:repositoryId`,
+      `/repositories/:repositoryId/branches/:branchId/*`) -- repository ->
+      branch -> path is fully deep-linkable via the URL, per
+      docs/design/stack-decision.md's "Routing" section; TanStack Query
+      hooks (`apps/web/src/queries/lore.ts`) own all server data; Zustand
+      (`apps/web/src/store/ui-store.ts`) owns file-tree expansion state and
+      mirrors the URL-derived selected path. The file tree
+      (`apps/web/src/components/file-tree.tsx`) is lazy: only the root's
+      direct children load up front; expanding a directory issues a new,
+      independently-cached request with `path`/`depth` mapped onto
+      `RevisionTreeRequest.path_prefix`/`max_depth`.
+
+      **Two real findings made building this, neither anticipated by
+      docs/design/api-contract.md or stack-decision.md:**
+
+      1. **`lore.revision.v1.RevisionService.BranchList` has no
+         repository-scoping filter, and `lore.model.v1.Branch` carries no
+         `repository_id` field at all** (verified against
+         `proto/vendor/lore/lore/revision/v1/revision.proto` and
+         `.../lore/model/v1/model.proto`). `BranchList` streams every
+         branch the server knows about, full stop. Worked around by
+         walking each branch's `stack` (ancestry chain, parent-first /
+         root-last) to its root and matching that root against the target
+         repository's `default_branch_id`
+         (`apps/bff/src/backend/branch-scope.ts`, `filterBranchesForRepository`) --
+         a real client-side (BFF-side) computation the API surface doesn't
+         do for you, documented in `packages/api-types/src/branch.ts`.
+      2. **`protoc-gen-es` v2's default output is not runnable under real
+         Node ESM.** `packages/lore-client`'s own `buf.gen.yaml` didn't set
+         `import_extension=js`, so generated cross-file relative imports
+         (e.g. `from "../../model/v1/model_pb"`) compiled cleanly --
+         `packages/lore-client`'s own `tsconfig.json` uses
+         `moduleResolution: "Bundler"`, which doesn't check this -- but
+         failed at actual `node` runtime with `ERR_MODULE_NOT_FOUND` the
+         first time a real process (the BFF) imported them. This was
+         latent since the prior scaffold task (nothing had exercised a
+         deep `./gen/*` import at runtime yet). Fixed by adding
+         `import_extension=js` to `buf.gen.yaml` and regenerating. Separately,
+         `packages/lore-client`'s own package.json `exports` map
+         (`"./gen/*"`) was broken for the *documented* deep-import style
+         (`.../repository_pb.js`, written in `packages/lore-client/src/index.ts`'s
+         own comment): the wildcard capture already includes the caller's
+         `.js`, so the target pattern appended a second one, producing
+         `TS2307` for every deep import. Fixed by dropping the `.js` on
+         these package-subpath imports (not a relative import, so
+         NodeNext's explicit-extension rule doesn't apply) and correcting
+         the misleading doc comment.
+
+      Evidence (real commands, run 2026-09-26):
+      - `pnpm run typecheck`: `pnpm -r run typecheck` exits 0 across all 4
+        workspaces.
+      - `pnpm run lint`: `eslint .` exits 0; re-proved the
+        `no-restricted-imports` boundary rule by temporarily adding
+        `apps/web/src/__boundary_check.ts` importing
+        `@epic-lore-webui/lore-client` -- lint failed naming that exact
+        import, file removed, lint back to exit 0.
+      - `pnpm run build`: exits 0 across all 4 workspaces (web `vite build`
+        + bff `tsc`).
+      - Booted the BFF in fixture mode (`PORT=3057 LORE_BACKEND=fixture
+        node apps/bff/dist/server.js`) and curled the real routes:
+        `GET /api/repositories` returned hex-encoded `id`/`defaultBranchId`
+        (not base64), e.g. `"id":"00000000000000000000000000000001"`;
+        `GET /api/repositories/<lore-id>/branches` returned exactly that
+        repository's 3 fixture branches (and the sibling repository's
+        `/branches` route returned only its own 2), proving the
+        ancestry-root branch-scoping filter above actually works;
+        `GET .../tree?depth=1` (no `path`) returned only the root's direct
+        entries (`crates` collapsed, no grandchildren); re-requesting with
+        `path=crates%2Flore-revision&depth=1` returned that directory
+        echoed plus only its direct children (no
+        `crates/lore-revision/src/lib.rs` leaked) -- proving the lazy
+        `path_prefix`/`max_depth` semantics. Also proved the SPA fallback
+        (`app.setNotFoundHandler` serving `index.html` for any
+        non-`/api/*` GET so a direct/reloaded deep link works) and that a
+        genuinely missing `/api/*` route still 404s as JSON. Process
+        killed afterward; confirmed stopped (`curl` connection-refused).
+      - `LORE_BACKEND=grpc LORE_SERVER_ADDR=localhost:41337`: attempted per
+        the task brief. `nc -z -w 2 localhost 41337` reported `CLOSED` (the
+        docker-compose demo stack was not up at verification time) --
+        curling `/api/repositories` returned `HTTP/1.1 500` with
+        `{"code":"14","message":"[unavailable]"}`, and the BFF's own log
+        showed a real `ConnectError` caused by `ECONNREFUSED` from
+        `@connectrpc/connect-node`'s actual HTTP/2 client attempting a real
+        TCP connection -- i.e. this is a genuine network failure against a
+        real (absent) backend, not a stub or a fake error path. Process
+        killed afterward; confirmed stopped.
+
+      **What is NOT proven:** the `grpc` backend was never exercised
+      against a live `lore-server` -- only against `ECONNREFUSED`. The
+      real-RPC shape (field names, streaming framing, and especially the
+      `filterBranchesForRepository` ancestry-root assumption above) is
+      `[code-says]` only: it compiles against the vendored proto types and
+      is internally consistent, but nothing has confirmed a real
+      `lore-server` actually behaves the way that assumption requires.
+      `[~]` rather than `[x]` for exactly this reason -- re-run the
+      `LORE_BACKEND=grpc` curl sequence above once the demo stack is
+      reachable and flip to `[x] [verified-e2e]` (or correct the ancestry
+      assumption) based on what that shows.
 - [ ] 2. Revision history + multi-lane branch graph
 - [ ] 3. Side-by-side text diff + binary-aware diff (thumbnail/metadata/
       chunk-delta), via `ThinClientService.RevisionDiff` / `ContentDiff`

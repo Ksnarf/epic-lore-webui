@@ -14,5 +14,14 @@ plugins:
     out: src/gen
     opt:
       - target=ts
+      # Node's ESM loader requires explicit extensions on relative import
+      # specifiers (NodeNext moduleResolution, used by apps/bff). Without
+      # this, protoc-gen-es's default (`import_extension=none`) emits
+      # cross-file relative imports like `from "../../model/v1/model_pb"`,
+      # which compile fine (this package's own tsconfig uses
+      # moduleResolution "Bundler", which doesn't check this) but fail at
+      # actual `node` runtime with ERR_MODULE_NOT_FOUND -- found running the
+      # BFF against this package for the first time building v1 task 1.
+      - import_extension=js
 inputs:
   - directory: ../../proto/vendor/lore
