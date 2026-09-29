@@ -98,6 +98,7 @@ export function registerRepositoryRoutes(app: FastifyInstance, backend: LoreBack
       }
 
       const { header, nodes } = await backend.getRevisionTree({
+        repositoryId,
         branchId,
         pathPrefix: request.query.path,
         maxDepth,

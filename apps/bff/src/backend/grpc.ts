@@ -23,6 +23,37 @@ import type {
 } from "./types.js";
 
 /**
+ * gRPC metadata keys `lore-transport` (the reference client, see
+ * `lore-transport/src/grpc/mod.rs`'s `inject_repository`) attaches to every
+ * repository-scoped call: `PARTITION_ID_KEY = "lore-partition-bin"` and
+ * `REPOSITORY_ID_KEY = "urc-repository-id-bin"`, both set to the target
+ * repository's raw id bytes. **Confirmed against a live `lore-server`**
+ * (docker-compose demo stack, 2026-09-29): `BranchList`/`RevisionList`/
+ * `RevisionInfo`/`RevisionTree` all return `PermissionDenied: Unauthorized`
+ * with a valid bearer token but no such metadata, and succeed once it is
+ * attached -- this is required regardless of how the bearer token itself is
+ * sourced (task 8's concern, not this one). Binary (`-bin`-suffixed) gRPC
+ * metadata is base64 over the wire; neither `@connectrpc/connect` nor
+ * `@connectrpc/connect-node` encode this for you, so it's done here.
+ *
+ * Separately (also confirmed live): `BranchList` scoped by this metadata
+ * actually filters its results to the named repository server-side --
+ * contradicting `branch-scope.ts`'s doc comment, written before this was
+ * known, which says `BranchList` streams every branch unfiltered. The
+ * ancestry-root client-side filter in `filterBranchesForRepository` is
+ * therefore redundant once this metadata is attached (not incorrect --
+ * harmless double-filtering), kept as defense-in-depth in case a future
+ * server build relaxes or changes this scoping.
+ */
+function repositoryHeaders(repositoryId: Uint8Array): Headers {
+  const value = Buffer.from(repositoryId).toString("base64");
+  const headers = new Headers();
+  headers.set("urc-repository-id-bin", value);
+  headers.set("lore-partition-bin", value);
+  return headers;
+}
+
+/**
  * Real backend for v1 task 1, dialing `lore-server`'s native gRPC surface.
  * Selected when `LORE_BACKEND=grpc` (see ../config.ts); `addr` is
  * `LORE_SERVER_ADDR` (default `localhost:41337`, the docker-compose demo
@@ -63,7 +94,10 @@ export function createGrpcBackend(addr: string): LoreBackend {
 
     async listBranchesForRepository(repository: Repository): Promise<Branch[]> {
       const all: Branch[] = [];
-      for await (const response of revisionClient.branchList({})) {
+      for await (const response of revisionClient.branchList(
+        {},
+        { headers: repositoryHeaders(repository.id) },
+      )) {
         if (response.branch) {
           all.push(response.branch);
         }
@@ -84,7 +118,9 @@ export function createGrpcBackend(addr: string): LoreBackend {
       let header: RevisionTreeResult["header"] | undefined;
       const nodes: RevisionTreeResult["nodes"] = [];
       try {
-        for await (const response of thinClient.revisionTree(request)) {
+        for await (const response of thinClient.revisionTree(request, {
+          headers: repositoryHeaders(params.repositoryId),
+        })) {
           if (response.payload.case === "header") {
             header = response.payload.value;
           } else if (response.payload.case === "node") {
@@ -113,7 +149,9 @@ export function createGrpcBackend(addr: string): LoreBackend {
             },
       });
       try {
-        const response = await revisionClient.revisionList(request);
+        const response = await revisionClient.revisionList(request, {
+          headers: repositoryHeaders(params.repositoryId),
+        });
         return {
           items: response.items,
           signatureForward: response.signatureForward,
@@ -135,7 +173,9 @@ export function createGrpcBackend(addr: string): LoreBackend {
         },
       });
       try {
-        const response = await thinClient.revisionInfo(request);
+        const response = await thinClient.revisionInfo(request, {
+          headers: repositoryHeaders(params.repositoryId),
+        });
         return response.revision ?? null;
       } catch (err) {
         if (isNotFound(err)) {

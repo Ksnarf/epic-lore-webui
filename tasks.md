@@ -147,7 +147,7 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
 
 ## v1 scope
 
-- [~] 1. Repo browse + file tree. Implemented: BFF routes `GET
+- [x] [verified-e2e] 1. Repo browse + file tree. Implemented: BFF routes `GET
       /api/repositories`, `GET /api/repositories/:repositoryId`, `GET
       /api/repositories/:repositoryId/branches`, `GET
       /api/repositories/:repositoryId/branches/:branchId/tree?path=&depth=`
@@ -247,17 +247,89 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
         real (absent) backend, not a stub or a fake error path. Process
         killed afterward; confirmed stopped.
 
-      **What is NOT proven:** the `grpc` backend was never exercised
-      against a live `lore-server` -- only against `ECONNREFUSED`. The
-      real-RPC shape (field names, streaming framing, and especially the
-      `filterBranchesForRepository` ancestry-root assumption above) is
-      `[code-says]` only: it compiles against the vendored proto types and
-      is internally consistent, but nothing has confirmed a real
-      `lore-server` actually behaves the way that assumption requires.
-      `[~]` rather than `[x]` for exactly this reason -- re-run the
-      `LORE_BACKEND=grpc` curl sequence above once the demo stack is
-      reachable and flip to `[x] [verified-e2e]` (or correct the ancestry
-      assumption) based on what that shows.
+      **Real-server validation, 2026-09-29 (retiring `[~]`):** the
+      docker-compose demo stack (`epic-lore-authz`'s `demo/`, at
+      `/Users/test/Documents/epic-lore-authz` -- NOT
+      `003-wbg/prj.tt.lore`, a different, unrelated repo the task brief
+      pointed at by mistake) was brought up (`docker compose up -d --build
+      --wait`, `DEMO_POSTGRES_PORT=15432` to dodge a local Postgres port
+      collision; `nc -z localhost 41337`/`41339` both succeeded;
+      `docker compose exec -T tools sh /scripts/verify.sh` passed 8/8).
+
+      One real defect found and fixed, blocking on its own regardless of
+      how a caller's bearer token is sourced: **every
+      `RevisionService`/`ThinClientService` RPC
+      (`BranchList`/`RevisionList`/`RevisionInfo`/`RevisionTree`) requires
+      two gRPC metadata headers carrying the target repository's raw id
+      bytes -- `urc-repository-id-bin` and `lore-partition-bin`** (matching
+      `epic-lore`'s own `lore-transport/src/grpc/mod.rs`,
+      `REPOSITORY_ID_KEY`/`PARTITION_ID_KEY`, injected by
+      `inject_repository()`) -- confirmed live via `grpcurl` (using this
+      repo's own vendored protos, real login + `ExchangeUserToken-
+      ForMultiresourceToken` flow, no `epic-lore-authz` source touched):
+      `BranchList`/`RevisionList`/`RevisionInfo` all returned
+      `PermissionDenied: Unauthorized` with a valid bearer token but no
+      such metadata, and succeeded once it was attached. `grpc.ts` attached
+      neither header to any call, so `LORE_BACKEND=grpc` against any
+      auth-enabled real `lore-server` failed on literally every
+      branch/revision/tree/tip request -- previously undetected because
+      the fixture backend has no auth concept and task 1's one prior
+      `grpc` attempt hit `ECONNREFUSED` before ever reaching this code
+      path. **Fixed**: `RevisionTreeParams`/`RevisionListParams`/
+      `RevisionInfoParams` (`apps/bff/src/backend/types.ts`) now carry
+      `repositoryId`, threaded from `routes/repositories.ts`/
+      `routes/revisions.ts` (the `Repository` is already resolved at every
+      call site); `grpc.ts`'s new `repositoryHeaders()` attaches both
+      headers (base64 of the raw id bytes -- binary gRPC metadata is
+      base64 over the wire and neither `@connectrpc/connect` nor
+      `@connectrpc/connect-node` encode this for you) to
+      `branchList`/`revisionTree`/`revisionList`/`revisionInfo`. Does not
+      touch task 8's scope (no bearer-token *sourcing* was built -- BFF-side
+      OIDC/session remains unbuilt).
+
+      **Separate real finding, refining (not reverting) the ancestry-root
+      finding above:** with that metadata attached, real `BranchList`
+      **does** filter its results to the named repository server-side --
+      contradicting the finding-1 doc comment above (written before this
+      was known) that it streams every branch unfiltered. Proven with two
+      real repositories seeded via the documented mechanism (`grpcurl` +
+      the demo's own `/admin/v1/resources` + `/admin/v1/grants` JSON API +
+      `RepositoryCreate`, exactly mirroring what `demo/scripts/verify.sh`
+      already does for its one repo -- same pattern, a second resource id):
+      the same multiresource token, pointed at repo 1's metadata, returned
+      only repo 1's branch; pointed at repo 2's metadata, returned only
+      repo 2's branch. `filterBranchesForRepository`'s ancestry-root
+      client-side filter is therefore redundant once this metadata is
+      attached (not wrong -- harmless double-filtering), kept as
+      defense-in-depth; corrected in `grpc.ts`'s doc comment.
+
+      Ran the fixed code through the **actual BFF HTTP routes** (not just
+      `grpcurl`) end-to-end against the real server, using a temporary,
+      git-reverted static-bearer-token interceptor to stand in for task 8's
+      unbuilt token sourcing (confirmed removed by `grep` before the final
+      build, and by a final unauthenticated boot re-failing honestly with
+      `[unauthenticated] authorization header required` -- no lingering
+      test scaffolding shipped): `GET /api/repositories` returned both real
+      repositories with real hex ids; `GET .../branches` for repo 1
+      returned only repo 1's branch, for repo 2 returned only repo 2's
+      branch -- assumption (a) now proven live, not `[code-says]`.
+      `pnpm -r run typecheck`/`lint`/`build` all exit 0 after the fix (and
+      again after the temporary interceptor was reverted); fixture backend
+      re-verified unaffected by the `LoreBackend` interface change (booted
+      `LORE_BACKEND=fixture`, repositories/branches/tree/revisions/tip all
+      still correct, process killed and confirmed dead).
+
+      **Two further real, honestly-unfixed edge cases found** (out of
+      surgical scope -- deciding the right product response is a design
+      call, not a wire-protocol correctness fix, so left as raw errors
+      rather than guessed at): on a branch with zero revisions ever pushed
+      (unavoidable with this seed data -- see task 2's note on why no real
+      revision content could be created), `GET .../tree` surfaces a raw
+      `500` (`[invalid_argument] Cannot get the tree of a zeroed
+      revision`) instead of an empty tree, and `GET .../revisions/0` (tip)
+      surfaces a raw `500` (`[internal] file not found: metadata key`).
+      Both are real, both reachable in principle on a brand-new
+      production repository's first visit, neither touched here.
 - [~] 2. Revision history + multi-lane branch graph. Implemented: BFF routes
       `GET /api/repositories/:repositoryId/branches/:branchId/revisions?cursor=`
       (cursor-paginated, `apps/bff/src/routes/revisions.ts`) and `GET
@@ -374,22 +446,57 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
         used). Process killed afterward; confirmed stopped (`ps` empty,
         follow-up curl connection-refused, exit code 7).
 
-      **What is NOT proven:** (a) the `grpc` backend's `listRevisions`/
-      `getRevisionInfo` were never exercised against a live `lore-server` --
-      only typechecked against the vendored proto types, same caveat task 1
-      already carries forward for its own gRPC path. (b) The fixture's
-      pagination windowing (strictly-anchored-at-`items[0]`, non-
-      overlapping pages) is a simplification -- finding 3 above -- and a
-      real server's actual windowing (and therefore whether the web client
-      needs signature-based de-duplication across pages) is unproven either
-      way. (c) The bounded per-branch-tip `RevisionInfo` merge-detection
-      heuristic (finding 1) has not been checked against a real repository
-      with a non-tip merge or a very branch-heavy history; `[~]` rather
-      than `[x]` for exactly this reason, same as task 1 -- re-run this
-      task's curl sequence once the demo stack is reachable, check whether
-      real `RevisionList` windowing matches the fixture's simplified model,
-      and flip to `[x] [verified-e2e]` (or correct the assumptions above)
-      based on what that shows.
+      **Real-server validation, 2026-09-29 (partial -- stays `[~]`):** ran
+      against the same live demo stack task 1 validated (see task 1's
+      entry for how it was brought up, and for the metadata-header defect
+      found and fixed in `grpc.ts` -- shared by every route this task
+      uses too, so this task benefits from that same fix). `(a)` the
+      `grpc` backend's `listRevisions`/`getRevisionInfo` code paths ARE now
+      exercised against a live `lore-server` (they were not before): `GET
+      .../revisions` on a real (but genuinely empty) branch returned real,
+      well-formed JSON -- `{"items":[],"signatureForward":null,
+      "signatureBackward":null}`, HTTP 200 -- proving the route, the hex
+      encoding, and the null-cursor case all work end-to-end against real
+      wire responses, not just the vendored proto types.
+
+      `(b)` and `(c)` remain genuinely **unprovable with this
+      environment**, and this is a hard limitation, not a shortcut: proving
+      real pagination windowing needs a branch with enough actual revision
+      history to span multiple pages, and proving the bounded merge-
+      detection heuristic needs a real two-parent merge. Both require
+      pushing real revision content (`RevisionService.BranchPush`), which
+      the real `lore-server` refuses unless "the revision and all data it
+      references are present in CAS" first (`revision.proto`'s own doc
+      comment on `BranchPushRequest`) -- i.e. a prior
+      `StorageService` content-upload round trip. `StorageService` is not
+      among the nine protos this repo vendors (deliberately -- see
+      `docs/design/api-contract.md`'s prior finding that it needs bidi
+      streaming unreachable from any browser-facing transport) and is not
+      vendored anywhere reachable from this validation either, so building
+      a real CAS-write client to manufacture multi-revision/merge
+      topology was out of this task's surgical scope. What WAS confirmed:
+      two real, genuinely-empty repositories were created live
+      (`RepositoryCreate` needs no CAS), each with one real branch and
+      zero revisions -- enough to prove `(a)`'s branch-scoping and the
+      empty-page shape of `(b)`'s response, but not enough to observe an
+      actual multi-page window or a real merge. `getRevisionInfo` on a
+      zero-revision branch's tip additionally surfaced a raw real `500`
+      (`[internal] file not found: metadata key`, see task 1's note on
+      this same edge case) -- left as-is, not silently coerced to `null`,
+      since guessing at what an `Internal`-coded error means risks masking
+      a genuinely broken call elsewhere.
+
+      Stays `[~]`: `(a)` is now `[verified-e2e]` in substance (proven live,
+      empty-branch case), but `(b)` and `(c)` remain exactly as
+      undetermined against a real server as before this session, for the
+      reason above -- not a gap in effort, a gap in what this environment
+      can produce without a full CAS-write client. Re-run this task's
+      cursor-pagination and merge-detection checks the moment a real
+      repository with actual multi-revision (ideally forked/merged)
+      history becomes reachable -- via the real `lore` CLI against this
+      same demo stack, or a seeded fixture repository with real content --
+      and flip to `[x] [verified-e2e]` (or correct the assumptions) based
+      on what that shows.
 - [ ] 3. Side-by-side text diff + binary-aware diff (thumbnail/metadata/
       chunk-delta), via `ThinClientService.RevisionDiff` / `ContentDiff`
       (`lore.thin_client.v1`). API contract study

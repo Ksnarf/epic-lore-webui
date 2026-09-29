@@ -3,6 +3,18 @@ import type { RevisionTreeHeader } from "@epic-lore-webui/lore-client/gen/lore/t
 import type { Revision, TreeNode } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
 
 export interface RevisionTreeParams {
+  /**
+   * Repository this call is scoped to. Required by the real `grpc` backend
+   * (see `grpc.ts`'s `repositoryHeaders`) -- confirmed against a live
+   * `lore-server` (docker-compose demo stack) that every RevisionService/
+   * ThinClientService RPC needs the target repository id as gRPC metadata
+   * (`urc-repository-id-bin`/`lore-partition-bin`, matching
+   * `lore-transport`'s own `inject_repository`) or the server rejects the
+   * call `PermissionDenied` even with a valid bearer token -- this is not
+   * carried by any request *message* field, so it has to be threaded
+   * through here instead. Unused by `fixture.ts` (no auth concept).
+   */
+  repositoryId: Uint8Array;
   branchId: Uint8Array;
   /** `RevisionTreeRequest.path_prefix` -- unset/empty walks from the repository root. */
   pathPrefix?: string | undefined;
@@ -22,6 +34,8 @@ export interface RevisionTreeResult {
  * (revision.proto:186-201).
  */
 export interface RevisionListParams {
+  /** See `RevisionTreeParams.repositoryId`'s doc comment -- same real-server requirement. */
+  repositoryId: Uint8Array;
   branchId: Uint8Array;
   /**
    * Signature cursor to anchor the page at (a prior response's
@@ -45,6 +59,8 @@ export interface RevisionListResult {
  * revision.
  */
 export interface RevisionInfoParams {
+  /** See `RevisionTreeParams.repositoryId`'s doc comment -- same real-server requirement. */
+  repositoryId: Uint8Array;
   branchId: Uint8Array;
   /** `0` resolves to the branch tip, matching `RevisionIdentifier`'s own convention. */
   number: bigint;

@@ -35,7 +35,11 @@ export function registerRevisionRoutes(app: FastifyInstance, backend: LoreBacken
         throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
       }
 
-      const { items, signatureForward, signatureBackward } = await backend.listRevisions({ branchId, cursor });
+      const { items, signatureForward, signatureBackward } = await backend.listRevisions({
+        repositoryId,
+        branchId,
+        cursor,
+      });
       const body: RevisionListResponseBody = {
         items: items.map(toRevisionItemDto),
         signatureForward: signatureForward ? encodeHexBytes(signatureForward) : null,
@@ -60,7 +64,7 @@ export function registerRevisionRoutes(app: FastifyInstance, backend: LoreBacken
         throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
       }
 
-      const revision = await backend.getRevisionInfo({ branchId, number });
+      const revision = await backend.getRevisionInfo({ repositoryId, branchId, number });
       if (!revision) {
         throw new NotFoundError(`revision not found: branch ${request.params.branchId} number ${request.params.number}`);
       }
