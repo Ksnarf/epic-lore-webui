@@ -124,3 +124,34 @@ export function useReleaseLockMutation(repositoryId: string) {
     },
   });
 }
+
+/**
+ * v1 task 3 (side-by-side text diff): the per-path change list between two
+ * revisions on one branch (`from`/`to` decimal revision numbers).
+ */
+export function useRevisionDiffQuery(repositoryId: string, branchId: string, from: string, to: string) {
+  return useQuery({
+    queryKey: ["revision-diff", repositoryId, branchId, from, to],
+    queryFn: () => api.fetchRevisionDiff(repositoryId, branchId, from, to),
+    enabled: repositoryId.length > 0 && branchId.length > 0 && from.length > 0 && to.length > 0,
+  });
+}
+
+/**
+ * The actual text diff (or binary/truncated flag) for one changed file,
+ * keyed by its two content addresses -- fetched only once a file is
+ * selected in the diff view (`enabled` below), not for every changed path
+ * up front.
+ */
+export function useContentDiffQuery(
+  repositoryId: string,
+  from: string,
+  to: string,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ["content-diff", repositoryId, from, to],
+    queryFn: () => api.fetchContentDiff(repositoryId, from, to),
+    enabled: repositoryId.length > 0 && (options?.enabled ?? true),
+  });
+}

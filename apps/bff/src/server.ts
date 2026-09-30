@@ -9,6 +9,7 @@ import { createGrpcBackend } from "./backend/grpc.js";
 import { loadConfig } from "./config.js";
 import { registerHealthzRoute } from "./routes/healthz.js";
 import { registerApiRoutes } from "./routes/api.js";
+import { registerDiffRoutes } from "./routes/diff.js";
 import { registerLockRoutes } from "./routes/locks.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerRevisionRoutes } from "./routes/revisions.js";
@@ -73,6 +74,7 @@ export async function buildServer() {
   registerRepositoryRoutes(app, backend);
   registerRevisionRoutes(app, backend);
   registerLockRoutes(app, backend);
+  registerDiffRoutes(app, backend);
   registerApiRoutes(app);
 
   // TODO(task 8): OIDC/PKCE login + callback routes against Okta, per

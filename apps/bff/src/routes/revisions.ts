@@ -6,7 +6,8 @@ import type { LoreBackend } from "../backend/types.js";
 import { toRevisionDto, toRevisionItemDto } from "../dto/lore.js";
 import { handleRouteError, parseHexId } from "./repositories.js";
 
-function parseRevisionNumber(value: string): bigint {
+/** Shared with routes/diff.ts (v1 task 3) -- same decimal-revision-number parsing, one place. */
+export function parseRevisionNumber(value: string): bigint {
   if (!/^\d+$/.test(value)) {
     throw new BadRequestError(`invalid revision number: expected a non-negative integer, got: ${value}`);
   }

@@ -1,6 +1,13 @@
 import type { Branch, RevisionItem, Repository } from "@epic-lore-webui/lore-client/gen/lore/model/v1/model_pb";
-import type { RevisionTreeHeader } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
-import type { Revision, TreeNode } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
+import type { RevisionDiffHeader, RevisionTreeHeader } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
+import type {
+  ContentDiffHeader,
+  DiffChange,
+  DiffConflict,
+  DiffPartition,
+  Revision,
+  TreeNode,
+} from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
 import type { Lock, Resource } from "@epic-lore-webui/lore-client/gen/lock_pb";
 
 export interface RevisionTreeParams {
@@ -100,6 +107,58 @@ export interface LockMutationParams {
 }
 
 /**
+ * v1 task 3 (side-by-side text diff), `ThinClientService.RevisionDiff`.
+ * **Scope decision** (see `packages/api-types/src/diff.ts`'s top comment):
+ * unlike the proto's `RevisionDiffRequest` (which lets "from" and "to" name
+ * independently-branched revisions), this repo's surface fixes both sides to
+ * one `branchId` with a `fromNumber`/`toNumber` pair -- the only shape the
+ * web UI's "diff vs. previous revision" flow needs.
+ */
+export interface RevisionDiffParams {
+  /** See `RevisionTreeParams.repositoryId`'s doc comment -- same real-server requirement. */
+  repositoryId: Uint8Array;
+  branchId: Uint8Array;
+  /** `0` resolves to the branch tip, matching `RevisionIdentifier`'s convention. */
+  fromNumber: bigint;
+  toNumber: bigint;
+  /** `RevisionDiffRequest.autoresolve` -- silently ignored by the server outside 3-way mode. Not surfaced in the route today (no UI control needs it yet); defaults to `false`. */
+  autoresolve?: boolean;
+}
+
+export interface RevisionDiffResult {
+  header: RevisionDiffHeader;
+  changes: DiffChange[];
+  /** 3-way conflicts, carried through unfiltered -- see `packages/api-types/src/diff.ts`'s top comment on why this task's UI doesn't render them. */
+  conflicts: DiffConflict[];
+  partitions: DiffPartition[];
+}
+
+/**
+ * v1 task 3, `ThinClientService.ContentDiff`. Operates purely on CAS
+ * addresses (no revision/branch context) -- still needs `repositoryId` for
+ * the same gRPC-metadata-scoping reason every other `ThinClientService` RPC
+ * does (see `RevisionTreeParams.repositoryId`'s doc comment); not confirmed
+ * live for this specific RPC before this task -- see `grpc.ts`'s
+ * `getContentDiff` for the live-verification status.
+ */
+export interface ContentDiffParams {
+  repositoryId: Uint8Array;
+  /** Empty array means "no content on this side" (`ContentDiffRequest.address_from`'s own doc comment). */
+  addressFrom: Uint8Array;
+  addressTo: Uint8Array;
+  contextLines?: number | undefined;
+  ignoreWhitespaceEol?: boolean;
+  ignoreWhitespaceInline?: boolean;
+  maxDiffSize?: bigint | undefined;
+}
+
+export interface ContentDiffResult {
+  header: ContentDiffHeader;
+  /** Every `chunk.diff` from the stream, concatenated in arrival order -- see `packages/api-types/src/diff.ts`'s doc comment on why this must happen before any line-oriented parsing. `""` when the header reports `binary` or `truncated` (the server emits no chunks in either case). */
+  diff: string;
+}
+
+/**
  * Internal data-source interface for v1 task 1 (repo browse + file tree).
  * `fixture.ts` and `grpc.ts` both implement this; route handlers
  * (../routes/repositories.ts) are written against this interface only and
@@ -133,4 +192,13 @@ export interface LoreBackend {
   acquireLock(params: LockMutationParams): Promise<Lock[]>;
   /** `urc.lock.LockService.Unlock` -- no-ops (returns an empty array) if no lock exists for the resource. */
   releaseLock(params: LockMutationParams): Promise<Resource[]>;
+
+  /**
+   * v1 task 3: the per-path change list between two revisions on one
+   * branch. See `RevisionDiffParams`'s doc comment for the same-branch
+   * scope decision.
+   */
+  getRevisionDiff(params: RevisionDiffParams): Promise<RevisionDiffResult>;
+  /** v1 task 3: a unified text diff (or binary/truncated flag) between two CAS addresses. */
+  getContentDiff(params: ContentDiffParams): Promise<ContentDiffResult>;
 }

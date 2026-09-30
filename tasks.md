@@ -497,13 +497,200 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       same demo stack, or a seeded fixture repository with real content --
       and flip to `[x] [verified-e2e]` (or correct the assumptions) based
       on what that shows.
-- [ ] 3. Side-by-side text diff + binary-aware diff (thumbnail/metadata/
-      chunk-delta), via `ThinClientService.RevisionDiff` / `ContentDiff`
-      (`lore.thin_client.v1`). API contract study
-      (`docs/design/api-contract.md` section 1, feature 3): `ContentDiff`
-      only flags `binary = true` -- there is no chunk-level binary diff RPC.
-      The thumbnail/metadata/chunk-delta framing needs descoping or new
-      server-side work; not a client-only feature as originally scoped.
+- [~] 3. Side-by-side text diff, via `ThinClientService.RevisionDiff` /
+      `ContentDiff` (`lore.thin_client.v1`). **Descope, per the API contract
+      study (`docs/design/api-contract.md` section 1, feature 3) and this
+      task's brief:** `ContentDiff` only ever flags `binary = true` -- there
+      is no chunk-level binary diff RPC, so the original "binary-aware diff
+      (thumbnail/metadata/chunk-delta)" framing is not buildable client-only.
+      Scope actually built: side-by-side **text** diff, plus honest binary
+      handling (a plain "binary file changed" card reporting the wire's own
+      `binary`/`truncated` flags and the two content addresses -- no
+      thumbnail, no chunk-delta, since neither exists server-side; that
+      remains new server-side surface, not something this task invented a
+      workaround for).
+
+      Implemented: BFF routes `GET
+      /api/repositories/:repositoryId/branches/:branchId/diff/:from/:to`
+      (`RevisionDiff`, `apps/bff/src/routes/diff.ts`) and `GET
+      /api/repositories/:repositoryId/content-diff?from=&to=` (`ContentDiff`,
+      hex CAS addresses, empty string = no content on that side).
+      `LoreBackend` (`apps/bff/src/backend/types.ts`) extended with
+      `getRevisionDiff`/`getContentDiff`, implemented in both `backend/
+      fixture.ts` and `backend/grpc.ts` (both stream-buffering RPCs the same
+      way `RevisionTree`/`RevisionList` already do, `repositoryHeaders()`
+      metadata reused). New `packages/api-types/src/diff.ts`:
+      `DiffChangeDto`/`RevisionDiffHeaderDto`/`DiffConflictSummaryDto`/
+      `DiffPartitionDto`/`RevisionDiffResponseBody`/`ContentDiffResponseBody`.
+      Web side: `useRevisionDiffQuery`/`useContentDiffQuery` (TanStack Query,
+      `apps/web/src/queries/lore.ts`); a pure, proto-agnostic unified-diff
+      parser + side-by-side row aligner (`apps/web/src/diff/unified-diff.ts`,
+      no diff library -- see "library choice" below) with 6 passing vitest
+      unit tests (pure addition, pure deletion, a mixed change group with a
+      trailing one-sided row, multiple hunks, an empty diff, and a
+      `\ No newline at end of file` marker); `components/diff-view.tsx`
+      (two-pane hunk table, red/green row highlighting, plus the honest
+      binary/truncated/linked-repository/no-textual-change cards); a new
+      deep-linkable route,
+      `/repositories/:repositoryId/branches/:branchId/diff/:from/:to/*`
+      (splat = selected changed-file path), `apps/web/src/routes/
+      revision-diff.tsx`; a "diff" link per revision row in
+      `components/revision-list.tsx` (diffing that revision against its
+      own-branch predecessor), disabled on revision #1 (see below).
+
+      **Library choice, recorded per this task's brief:** a hand-written
+      unified-diff parser/aligner, not the `diff` npm package. `ContentDiff`
+      already computes the diff server-side and streams back finished
+      unified-diff *text* -- this repo never needs to compute a diff from two
+      strings (what `diff`/jsdiff is for), only to parse and align an
+      already-computed one for two-pane display, which is a much smaller,
+      fully bespoke problem (~90 lines, no dependency).
+
+      **Scope decisions made building this, recorded precisely (not proto
+      limitations -- deliberate reductions):**
+
+      1. **`RevisionDiff` is scoped to one branch's own two revision
+         numbers**, not the proto's more general independently-branched
+         `query_from`/`query_to`. The web UI's only real need is "diff this
+         revision against its own predecessor" from the history view; see
+         `packages/api-types/src/diff.ts`'s top comment.
+      2. **No "diff vs previous" link on revision #1.** That revision's real
+         parent lives on a *different* branch (the fork point, via
+         `Branch.stack` -- task 2's finding), and `Branch.stack` only carries
+         that ancestor's *signature*, not its revision *number*; resolving
+         the number needs an extra `RevisionInfo`-by-signature call this task
+         deliberately doesn't make -- the same "bounded compromise" shape as
+         task 2's merge-detection heuristic, not an oversight.
+      3. **3-way `DiffConflict` entries are carried through the DTO
+         unfiltered but not rendered** -- `docs/design/api-contract.md`
+         itself splits this across two features: feature 3 (this task) is
+         text/binary diff display, feature 7 (branch management + merge/
+         conflict UI) owns conflict rendering. The route surfaces
+         `conflicts.length` as a plain banner so a merge diff's presence is
+         never silently hidden, without building feature 7's UI here.
+      4. **`Action.KEEP` is read as "path unchanged, content may differ"
+         (a "modify"), not "no change at all."** `DiffChange` carries
+         `contentFrom`/`contentTo` alongside every action including `KEEP`,
+         and there is no separate "MODIFY" action in the enum -- this is an
+         interpretation call, not confirmed against a real multi-revision
+         diff (the demo stack has none -- see below), documented in
+         `packages/api-types/src/diff.ts`'s doc comment on `DiffChangeDto`.
+
+      **Fixture data** (`apps/bff/src/backend/fixture.ts`): a realistic
+      5-file `RevisionDiff` between `epic-lore`'s `main` revisions 11 and 12
+      (both real fixture revisions from task 2's chain) covering every
+      `Action` this repo models except `COPY` (not exercised by anything
+      this study read, left untested rather than invented): a text `KEEP`
+      (modify, reusing task 1's own `metadata.rs` tree-fixture address as the
+      "from" side), a text `DELETE` (reusing task 1's `main.rs` address), a
+      text `ADD` (new file), a content-preserving `MOVE` (rename,
+      byte-identical content on both sides), and a binary `KEEP` (modify).
+      Matching `ContentDiff` fixtures for all five content pairs: three real
+      hand-written unified diffs (with correct `linesAdded`/`linesDeleted`),
+      one genuinely empty diff (the rename), and one genuine `binary = true`
+      response with zero stats and no diff text -- this task's honest binary
+      handling exercised end-to-end, not just described.
+
+      Evidence (real commands, run 2026-09-30):
+      - `pnpm -r run typecheck`/`lint`/`build`: all exit 0 across all 4
+        workspaces.
+      - `pnpm --filter @epic-lore-webui/web run test`: 14/14 pass (6 new
+        `unified-diff.test.ts` + the 8 pre-existing
+        `lane-assignment.test.ts`/`group-locks.test.ts`).
+      - Fixture mode (`PORT=3301 LORE_BACKEND=fixture`): curled every route.
+        `GET .../diff/11/12` returned exactly the 5-change list above with
+        correct hex content addresses (`contentFrom`/`contentTo` empty-string
+        for the ADD/DELETE sides); `GET .../content-diff` for all 5 address
+        pairs returned the correct `diff` text and `linesAdded`/
+        `linesDeleted` for the 3 text cases, an empty `diff` with zero stats
+        for the unchanged-content rename, and `binary: true` with an empty
+        `diff` for the binary pair. Error paths: an unseeded revision-diff
+        pair -> `404`; an unseeded content-diff address pair -> `404`;
+        invalid hex -> `400`; a non-numeric revision number -> `400`; an
+        unknown repository -> `404`. Process killed and confirmed stopped
+        (`ps` empty, follow-up curl connection-refused).
+
+      **Real-server validation, 2026-09-30** (same live demo stack tasks
+      1/2/5 validated -- `epic-lore-authz`'s `demo/`, already running; no
+      source file in that repo modified). This repo's own vendored
+      `thin_client/v1/{thin_client,model}.proto` were `docker cp`'d into the
+      demo's `tools` container (verbatim, not edited -- same mechanism task 5
+      used for `lock.proto`) since the container's `/loreprotos` had an empty
+      `lore/thin_client/v1/` directory. Logged in via the documented real
+      flow (`StartAuthSession` -> browser leg -> `GetAuthSession`) and
+      exchanged for a multiresource token scoped to the two repositories
+      tasks 1/2/5 already seeded (`ExchangeUserTokenForMultiresourceToken`,
+      no `epic-lore-authz` source touched).
+
+      **(a) `RevisionDiff` is reachable, authenticated, and returns
+      well-formed responses -- proven, not assumed:**
+      - Confirmed via `grpcurl` that `RevisionDiff` needs the same
+        `repositoryHeaders()` metadata every other `RevisionService`/
+        `ThinClientService` RPC does: `PermissionDenied: Unauthorized` with a
+        valid bearer token but no such metadata, succeeds once attached.
+      - **New finding, refining task 1/2's edge-case note:** tip-vs-tip
+        (`number = 0`) `RevisionDiff` on a genuinely zero-revision branch
+        does **not** error the way `RevisionTree`/`RevisionInfo` do on the
+        same edge case (`[invalid_argument] Cannot get the tree of a zeroed
+        revision`, `[internal] file not found: metadata key`) -- it returns a
+        real `200`-shaped stream with a degenerate all-zero header (the
+        echoed `identifierFrom.branchId` is all-zero, not even the requested
+        branch id) and an empty `changes` array. A third, distinct way this
+        API surface handles "no revisions exist yet," on top of the two task
+        1/2 already found -- flagged, not smoothed over.
+      - Explicit non-tip lookup (`number = 1`) on the same zero-revision
+        branch correctly returns a real `NotFound: Revision ...@1 not found`
+        -- confirmed our `grpc.ts` `isNotFound()` mapping handles it, and
+        confirmed live through the **actual BFF HTTP route** (not just
+        `grpcurl`, via a temporary, git-reverted transport-level
+        bearer-token interceptor, same precedent as tasks 1/2/5): `GET
+        .../diff/1/1` returned a real `404 {"error":"branch or revision not
+        found"}`; `GET .../diff/0/0` returned the real degenerate-header
+        `200` above, through the full route/backend/DTO pipeline, not just
+        the wire.
+
+      **(b) MAJOR FINDING, not anticipated by `docs/design/api-contract.md`
+      (which only flagged `ContentDiff`'s binary-only framing, never that it
+      might be unimplemented): `ContentDiff` returns a real gRPC
+      `Unimplemented` on this demo build of `lore-server` --
+      `"lore.thin_client.v1.ThinClientService.ContentDiff not yet
+      implemented"`.** Confirmed stable across repeated calls, including the
+      degenerate both-addresses-empty case (which needs no real CAS content
+      at all) -- ruling out a transient error. Confirmed the same
+      `repositoryHeaders()` requirement applies first (`PermissionDenied`
+      without it), then `Unimplemented` once authorized/scoped correctly.
+      Confirmed through the **actual BFF HTTP route** too: `GET
+      .../content-diff?from=&to=` returned a real, unswallowed `500
+      {"code":"12","message":"[unimplemented] lore.thin_client.v1.
+      ThinClientService.ContentDiff not yet implemented"}` -- the honest
+      failure, not papered over. **This is a different, more fundamental gap
+      than task 2's known CAS-write limitation**: task 2's gap is "we can't
+      manufacture real revision content to test against"; this one is "the
+      RPC this task's entire text/binary-diff feature depends on is not
+      served by this build of `lore-server` at all," so even real CAS
+      content would not make `ContentDiff` work against this demo stack
+      today. The temporary interceptor (`DIFFTEST_BEARER_TOKEN`, `grpc.ts`
+      transport-level) was fully reverted -- confirmed absent by `grep`
+      across `apps/`/`packages/` after a clean `pnpm -r run build`.
+
+      **What is proven vs. not, stated plainly:** the fixture backend and
+      the full BFF/web pipeline (routes, DTOs, the unified-diff parser, the
+      side-by-side view, the honest binary/truncated/rename/linked-repository
+      cards) are built, typecheck/lint/build clean, and verified end-to-end
+      against realistic fixture data covering every scoped case. Against the
+      real server: `RevisionDiff` is proven reachable, correctly
+      authenticated/scoped, and correctly handled for both its edge cases
+      (zeroed-tip and not-found) through the real BFF route. `ContentDiff` --
+      the half that actually produces diff *text* -- is proven **not
+      callable at all** against this demo build, independent of and prior to
+      the content-availability question task 2 already flagged. Side-by-side
+      text-diff rendering is therefore verified only against fixture data;
+      it cannot be verified live until either this demo stack's
+      `lore-server` build implements `ContentDiff`, or a build that does
+      becomes reachable. Stays `[~]`, not `[x]`: re-run this task's live
+      `ContentDiff` check the moment a `lore-server` build implementing it is
+      reachable, and flip to `[x] [verified-e2e]` (or correct the assumptions
+      above) based on what that shows.
 - [ ] 4. Asset preview via presigned URLs -- differentiator vs. GitHub/
       GitLab, neither of which does browser asset preview natively (see
       `docs/research/competitor-analysis.md`). API contract study

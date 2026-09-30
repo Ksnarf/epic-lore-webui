@@ -13,22 +13,34 @@ import {
   type Repository,
 } from "@epic-lore-webui/lore-client/gen/lore/model/v1/model_pb";
 import {
+  Action,
+  ContentDiffHeaderSchema,
+  DiffChangeSchema,
   FileMode,
   NodeType,
   Revision_ParentSchema,
   RevisionSchema,
   TreeNodeSchema,
+  type ContentDiffHeader,
+  type DiffChange,
   type Revision,
   type TreeNode,
 } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
-import { RevisionTreeHeaderSchema } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
+import {
+  RevisionDiffHeaderSchema,
+  RevisionTreeHeaderSchema,
+} from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
 import { bytesEqual, filterBranchesForRepository } from "./branch-scope.js";
 import { ConflictError, NotFoundError } from "./errors.js";
 import { queryFixtureTree } from "./tree-query.js";
 import type {
+  ContentDiffParams,
+  ContentDiffResult,
   LockMutationParams,
   LoreBackend,
   QueryLocksParams,
+  RevisionDiffParams,
+  RevisionDiffResult,
   RevisionInfoParams,
   RevisionListParams,
   RevisionListResult,
@@ -415,6 +427,196 @@ const locks: Lock[] = [
   }),
 ];
 
+// --- v1 task 3 fixture revision/content diffs -----------------------------
+//
+// One realistic multi-file `RevisionDiff` (`lore/main` revision 11 -> 12,
+// both real fixture revisions from the chain above) covering every `Action`
+// this repo's DiffChangeDto models except COPY (not exercised by anything
+// real `lore-server` handler this study read -- left untested rather than
+// invented): a text MODIFY (KEEP with differing content, see
+// packages/api-types/src/diff.ts's top comment on this reading), a text
+// DELETE, a text ADD, a content-preserving rename (MOVE), and a binary
+// MODIFY -- plus matching `ContentDiff` fixtures for each content-bearing
+// pair, including one genuinely `binary = true` response (this task's
+// honest binary handling) and one genuinely empty diff (the rename, whose
+// content is byte-identical on both sides).
+
+const DIFF_FROM_NUMBER = 11n;
+const DIFF_TO_NUMBER = 12n;
+const loreMainRev11 = loreMainBase.find((revision) => revision.number === DIFF_FROM_NUMBER)!;
+
+// Text file, modified in place (same path, different content) -- reuses
+// the tree fixture's own `metadata.rs` address (203) as the "from" side so
+// this diff fixture and task 1's tree fixture agree on what that file's
+// prior content address was.
+const METADATA_RS_FROM = fixtureHash(203);
+const METADATA_RS_TO = fixtureHash(9203);
+// Text file, deleted -- reuses the tree fixture's `main.rs` address (205).
+const MAIN_RS_FROM = fixtureHash(205);
+// Text file, newly added.
+const LIB_RS_TO = fixtureHash(9210);
+// Text file, renamed with unchanged content -- reuses the tree fixture's
+// `README.md` address (206) on both sides.
+const README_UNCHANGED = fixtureHash(206);
+// Binary asset, modified in place.
+const LOGO_PNG_FROM = fixtureHash(9300);
+const LOGO_PNG_TO = fixtureHash(9301);
+const EMPTY_ADDRESS = new Uint8Array(0);
+
+const diffChanges: DiffChange[] = [
+  create(DiffChangeSchema, {
+    path: "crates/lore-revision/src/metadata.rs",
+    pathFrom: "",
+    action: Action.KEEP,
+    nodeType: NodeType.FILE,
+    contentFrom: METADATA_RS_FROM,
+    contentTo: METADATA_RS_TO,
+    automerged: false,
+    linkRepositoryIndex: 0,
+    tracking: false,
+  }),
+  create(DiffChangeSchema, {
+    path: "crates/lore-server/src/main.rs",
+    pathFrom: "",
+    action: Action.DELETE,
+    nodeType: NodeType.FILE,
+    contentFrom: MAIN_RS_FROM,
+    contentTo: EMPTY_ADDRESS,
+    automerged: false,
+    linkRepositoryIndex: 0,
+    tracking: false,
+  }),
+  create(DiffChangeSchema, {
+    path: "crates/lore-server/src/lib.rs",
+    pathFrom: "",
+    action: Action.ADD,
+    nodeType: NodeType.FILE,
+    contentFrom: EMPTY_ADDRESS,
+    contentTo: LIB_RS_TO,
+    automerged: false,
+    linkRepositoryIndex: 0,
+    tracking: false,
+  }),
+  create(DiffChangeSchema, {
+    path: "docs/README.md",
+    pathFrom: "README.md",
+    action: Action.MOVE,
+    nodeType: NodeType.FILE,
+    contentFrom: README_UNCHANGED,
+    contentTo: README_UNCHANGED,
+    automerged: false,
+    linkRepositoryIndex: 0,
+    tracking: false,
+  }),
+  create(DiffChangeSchema, {
+    path: "assets/logo.png",
+    pathFrom: "",
+    action: Action.KEEP,
+    nodeType: NodeType.FILE,
+    contentFrom: LOGO_PNG_FROM,
+    contentTo: LOGO_PNG_TO,
+    automerged: false,
+    linkRepositoryIndex: 0,
+    tracking: false,
+  }),
+];
+
+/** Keyed `${hexKey(branchId)}:${fromNumber}:${toNumber}` -- see `RevisionDiffParams`'s same-branch scope decision. */
+const revisionDiffFixtures = new Map<string, RevisionDiffResult>([
+  [
+    `${hexKey(BRANCH_LORE_MAIN_ID)}:${DIFF_FROM_NUMBER}:${DIFF_TO_NUMBER}`,
+    {
+      header: create(RevisionDiffHeaderSchema, {
+        identifierFrom: create(RevisionIdentifierSchema, { branchId: BRANCH_LORE_MAIN_ID, number: DIFF_FROM_NUMBER }),
+        signatureFrom: loreMainRev11.signature,
+        identifierTo: create(RevisionIdentifierSchema, { branchId: BRANCH_LORE_MAIN_ID, number: DIFF_TO_NUMBER }),
+        signatureTo: loreMainRev12.signature,
+        // 2-way mode: base fields unset.
+        identifierBase: undefined,
+        signatureBase: undefined,
+      }),
+      changes: diffChanges,
+      conflicts: [],
+      partitions: [],
+    },
+  ],
+]);
+
+function contentDiffHeader(fields: {
+  linesAdded: bigint;
+  linesDeleted: bigint;
+  binary?: boolean;
+  truncated?: boolean;
+}): ContentDiffHeader {
+  return create(ContentDiffHeaderSchema, {
+    linesAdded: fields.linesAdded,
+    linesDeleted: fields.linesDeleted,
+    binary: fields.binary ?? false,
+    truncated: fields.truncated ?? false,
+    // 3-way-only fields; every fixture entry here is 2-way.
+    hasConflicts: false,
+    conflictCount: 0,
+  });
+}
+
+/** Keyed `${hexKey(addressFrom)}:${hexKey(addressTo)}`. */
+const contentDiffFixtures = new Map<string, ContentDiffResult>([
+  [
+    `${hexKey(METADATA_RS_FROM)}:${hexKey(METADATA_RS_TO)}`,
+    {
+      header: contentDiffHeader({ linesAdded: 2n, linesDeleted: 1n }),
+      diff: [
+        "@@ -1,3 +1,4 @@",
+        ' pub const REVIEWED_BY: &str = "reviewed-by";',
+        '-pub const MERGED_BY: &str = "merged-by";',
+        '+pub const MERGED_BY: &str = "merged-by-user";',
+        ' pub const CHANGE_REQUEST: &str = "change-request";',
+        '+pub const CREATED_BY: &str = "created-by";',
+        "",
+      ].join("\n"),
+    },
+  ],
+  [
+    `${hexKey(MAIN_RS_FROM)}:${hexKey(EMPTY_ADDRESS)}`,
+    {
+      header: contentDiffHeader({ linesAdded: 0n, linesDeleted: 3n }),
+      diff: [
+        "@@ -1,3 +0,0 @@",
+        "-fn main() {",
+        '-    println!("lore-server starting");',
+        "-}",
+        "",
+      ].join("\n"),
+    },
+  ],
+  [
+    `${hexKey(EMPTY_ADDRESS)}:${hexKey(LIB_RS_TO)}`,
+    {
+      header: contentDiffHeader({ linesAdded: 2n, linesDeleted: 0n }),
+      diff: ["@@ -0,0 +1,2 @@", "+pub mod handlers;", "+pub mod grpc;", ""].join("\n"),
+    },
+  ],
+  [
+    // Rename with byte-identical content on both sides -- a real, honest
+    // "no textual change" result, not a special-cased short-circuit.
+    `${hexKey(README_UNCHANGED)}:${hexKey(README_UNCHANGED)}`,
+    {
+      header: contentDiffHeader({ linesAdded: 0n, linesDeleted: 0n }),
+      diff: "",
+    },
+  ],
+  [
+    `${hexKey(LOGO_PNG_FROM)}:${hexKey(LOGO_PNG_TO)}`,
+    {
+      // Binary: stats are zero and no chunks are emitted, per
+      // `ContentDiffHeader.binary`'s own doc comment -- this task's honest
+      // binary handling has nothing more to show here.
+      header: contentDiffHeader({ linesAdded: 0n, linesDeleted: 0n, binary: true }),
+      diff: "",
+    },
+  ],
+]);
+
 /**
  * Server picks page size (`RevisionListResponse`'s own doc comment) --
  * fixture-only choice, kept small so a curl demonstration of pagination
@@ -566,6 +768,26 @@ export function createFixtureBackend(): LoreBackend {
       }
       const [removed] = locks.splice(index, 1);
       return [removed!.resource!];
+    },
+
+    async getRevisionDiff(params: RevisionDiffParams): Promise<RevisionDiffResult> {
+      const key = `${hexKey(params.branchId)}:${params.fromNumber}:${params.toNumber}`;
+      const entry = revisionDiffFixtures.get(key);
+      if (!entry) {
+        throw new NotFoundError(
+          `fixture: no revision diff for branch ${hexKey(params.branchId)} from ${params.fromNumber} to ${params.toNumber}`,
+        );
+      }
+      return entry;
+    },
+
+    async getContentDiff(params: ContentDiffParams): Promise<ContentDiffResult> {
+      const key = `${hexKey(params.addressFrom)}:${hexKey(params.addressTo)}`;
+      const entry = contentDiffFixtures.get(key);
+      if (!entry) {
+        throw new NotFoundError(`fixture: no content diff for address pair ${key}`);
+      }
+      return entry;
     },
   };
 }

@@ -59,6 +59,7 @@ export function BranchHistoryRoute() {
         <div className="flex items-start gap-6">
           <RevisionList
             items={focusItems}
+            repositoryId={repositoryId}
             branchId={branchId}
             selectedNodeId={selectedNodeId}
             onSelect={handleSelectNode}

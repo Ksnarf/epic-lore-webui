@@ -6,11 +6,19 @@ import { RevisionIdentifierSchema } from "@epic-lore-webui/lore-client/gen/lore/
 import { RepositoryService } from "@epic-lore-webui/lore-client/gen/lore/repository/v1/repository_pb";
 import { RevisionListRequestSchema, RevisionService } from "@epic-lore-webui/lore-client/gen/lore/revision/v1/revision_pb";
 import {
+  RevisionDiffRequestSchema,
   RevisionInfoRequestSchema,
   RevisionTreeRequestSchema,
   ThinClientService,
 } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
-import type { Revision } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
+import { ContentDiffRequestSchema } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
+import type {
+  ContentDiffHeader,
+  DiffChange,
+  DiffConflict,
+  DiffPartition,
+  Revision,
+} from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
 import {
   LockRequestSchema,
   LockService,
@@ -23,9 +31,13 @@ import {
 import { filterBranchesForRepository } from "./branch-scope.js";
 import { NotFoundError } from "./errors.js";
 import type {
+  ContentDiffParams,
+  ContentDiffResult,
   LockMutationParams,
   LoreBackend,
   QueryLocksParams,
+  RevisionDiffParams,
+  RevisionDiffResult,
   RevisionInfoParams,
   RevisionListParams,
   RevisionListResult,
@@ -274,6 +286,101 @@ export function createGrpcBackend(addr: string): LoreBackend {
         }
         throw err;
       }
+    },
+
+    /**
+     * v1 task 3. Not confirmed live before this task whether
+     * `ThinClientService.RevisionDiff` needs `repositoryHeaders()` the same
+     * way `RevisionTree`/`RevisionInfo` do (see task 1's finding, this
+     * file's top comment) -- attached here on the same reasoning (same
+     * service, same gRPC-metadata-scoping pattern found for every other RPC
+     * on this service) but flagged in tasks.md task 3 as an assumption
+     * until proven, since the demo stack's seeded branches have no revision
+     * content to diff (see tasks.md task 2's note on why).
+     */
+    async getRevisionDiff(params: RevisionDiffParams): Promise<RevisionDiffResult> {
+      const request = create(RevisionDiffRequestSchema, {
+        queryFrom: {
+          case: "identifierFrom",
+          value: create(RevisionIdentifierSchema, { branchId: params.branchId, number: params.fromNumber }),
+        },
+        queryTo: {
+          case: "identifierTo",
+          value: create(RevisionIdentifierSchema, { branchId: params.branchId, number: params.toNumber }),
+        },
+        autoresolve: params.autoresolve ?? false,
+      });
+
+      let header: RevisionDiffResult["header"] | undefined;
+      const changes: DiffChange[] = [];
+      const conflicts: DiffConflict[] = [];
+      const partitions: DiffPartition[] = [];
+      try {
+        for await (const response of thinClient.revisionDiff(request, {
+          headers: repositoryHeaders(params.repositoryId),
+        })) {
+          switch (response.payload.case) {
+            case "header":
+              header = response.payload.value;
+              break;
+            case "change":
+              changes.push(response.payload.value);
+              break;
+            case "conflict":
+              conflicts.push(response.payload.value);
+              break;
+            case "partition":
+              partitions.push(response.payload.value);
+              break;
+          }
+        }
+      } catch (err) {
+        if (isNotFound(err)) {
+          throw new NotFoundError("branch or revision not found");
+        }
+        throw err;
+      }
+      if (!header) {
+        throw new NotFoundError("RevisionDiff stream produced no header (branch or revision not found)");
+      }
+      return { header, changes, conflicts, partitions };
+    },
+
+    /**
+     * v1 task 3. Same `repositoryHeaders()` assumption/caveat as
+     * `getRevisionDiff` above -- `ContentDiff` operates on bare CAS
+     * addresses with no revision context, but is still a `ThinClientService`
+     * RPC, so the same per-repository partition scoping is expected to
+     * apply. Buffers the whole stream and concatenates every `chunk.diff`
+     * before returning -- see `packages/api-types/src/diff.ts`'s doc
+     * comment on why a chunk boundary must never be assumed to land on a
+     * line boundary.
+     */
+    async getContentDiff(params: ContentDiffParams): Promise<ContentDiffResult> {
+      const request = create(ContentDiffRequestSchema, {
+        addressFrom: params.addressFrom,
+        addressTo: params.addressTo,
+        contextLines: params.contextLines,
+        ignoreWhitespaceEol: params.ignoreWhitespaceEol ?? false,
+        ignoreWhitespaceInline: params.ignoreWhitespaceInline ?? false,
+        maxDiffSize: params.maxDiffSize,
+      });
+
+      let header: ContentDiffHeader | undefined;
+      let diff = "";
+      for await (const response of thinClient.contentDiff(request, {
+        headers: repositoryHeaders(params.repositoryId),
+      })) {
+        if (response.payload.case === "header") {
+          header = response.payload.value;
+        } else if (response.payload.case === "chunk") {
+          diff += response.payload.value.diff;
+        }
+      }
+      if (!header) {
+        throw new NotFoundError("ContentDiff stream produced no header");
+      }
+      return { header, diff };
     },
   };
 }

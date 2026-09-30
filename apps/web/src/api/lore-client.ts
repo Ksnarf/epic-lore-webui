@@ -1,5 +1,6 @@
 import type {
   BranchListResponseBody,
+  ContentDiffResponseBody,
   LockAcquireRequestBody,
   LockAcquireResponseBody,
   LockListResponseBody,
@@ -7,6 +8,7 @@ import type {
   LockReleaseResponseBody,
   RepositoryGetResponseBody,
   RepositoryListResponseBody,
+  RevisionDiffResponseBody,
   RevisionInfoResponseBody,
   RevisionListResponseBody,
   RevisionTreeResponseBody,
@@ -142,4 +144,31 @@ export function acquireLock(repositoryId: string, body: LockAcquireRequestBody):
 /** `urc.lock.LockService.Unlock` via the BFF -- no-ops if no lock exists for the resource. */
 export function releaseLock(repositoryId: string, body: LockReleaseRequestBody): Promise<LockReleaseResponseBody> {
   return sendJson(`/api/repositories/${encodeURIComponent(repositoryId)}/locks`, "DELETE", body);
+}
+
+/**
+ * v1 task 3 (side-by-side text diff). `from`/`to` are decimal revision
+ * numbers on the same branch -- see `RevisionDiffResponseBody`'s doc
+ * comment (packages/api-types/src/diff.ts) for the same-branch scope
+ * decision.
+ */
+export function fetchRevisionDiff(
+  repositoryId: string,
+  branchId: string,
+  from: string,
+  to: string,
+): Promise<RevisionDiffResponseBody> {
+  return getJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/branches/${encodeURIComponent(branchId)}/diff/${encodeURIComponent(from)}/${encodeURIComponent(to)}`,
+  );
+}
+
+/**
+ * v1 task 3. `from`/`to` are hex-encoded CAS addresses; an empty string
+ * means "no content on this side" (`ContentDiffRequest.address_from`/
+ * `address_to`'s own doc comment -- e.g. an ADD or DELETE change).
+ */
+export function fetchContentDiff(repositoryId: string, from: string, to: string): Promise<ContentDiffResponseBody> {
+  const params = new URLSearchParams({ from, to });
+  return getJson(`/api/repositories/${encodeURIComponent(repositoryId)}/content-diff?${params.toString()}`);
 }

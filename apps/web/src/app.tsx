@@ -5,6 +5,7 @@ import { BranchTreeRoute } from "./routes/branch-tree.js";
 import { RepositoriesRoute } from "./routes/repositories.js";
 import { RepositoryBranchesRoute } from "./routes/repository-branches.js";
 import { RepositoryLocksRoute } from "./routes/repository-locks.js";
+import { RevisionDiffRoute } from "./routes/revision-diff.js";
 
 // TanStack Query owns all server/RPC data (docs/design/stack-decision.md,
 // "State management"). One shared client for the whole app.
@@ -19,6 +20,10 @@ const router = createBrowserRouter([
   { path: "/", element: <RepositoriesRoute /> },
   { path: "/repositories/:repositoryId", element: <RepositoryBranchesRoute /> },
   { path: "/repositories/:repositoryId/locks", element: <RepositoryLocksRoute /> },
+  {
+    path: "/repositories/:repositoryId/branches/:branchId/diff/:from/:to/*",
+    element: <RevisionDiffRoute />,
+  },
   { path: "/repositories/:repositoryId/branches/:branchId/history/*", element: <BranchHistoryRoute /> },
   { path: "/repositories/:repositoryId/branches/:branchId/*", element: <BranchTreeRoute /> },
 ]);

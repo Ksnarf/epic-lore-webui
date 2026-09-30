@@ -2,23 +2,36 @@ import { timestampMs } from "@bufbuild/protobuf/wkt";
 import { encodeHexBytes } from "@epic-lore-webui/api-types";
 import type {
   BranchSummary,
+  ContentDiffResponseBody,
+  DiffActionDto,
+  DiffChangeDto,
+  DiffConflictSummaryDto,
+  DiffPartitionDto,
   LockDto,
   LockResourceDto,
   RepositorySummary,
+  RevisionDiffHeaderDto,
   RevisionDto,
   RevisionItemDto,
   RevisionParentDto,
+  RevisionRefDto,
   TreeNodeDto,
 } from "@epic-lore-webui/api-types";
 import type { Lock, Resource } from "@epic-lore-webui/lore-client/gen/lock_pb";
-import type { Branch, RevisionItem, Repository } from "@epic-lore-webui/lore-client/gen/lore/model/v1/model_pb";
+import type { Branch, RevisionIdentifier, RevisionItem, Repository } from "@epic-lore-webui/lore-client/gen/lore/model/v1/model_pb";
 import {
+  Action,
   FileMode,
   NodeType,
+  type ContentDiffHeader,
+  type DiffChange,
+  type DiffConflict,
+  type DiffPartition,
   type Revision,
   type Revision_Parent,
   type TreeNode,
 } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
+import type { RevisionDiffHeader } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
 import { bytesEqual } from "../backend/branch-scope.js";
 
 /** Converts a gRPC `lore.model.v1.Repository` to the BFF's JSON contract (packages/api-types). */
@@ -136,5 +149,95 @@ export function toTreeNodeDto(node: TreeNode): TreeNodeDto {
     size: String(node.size),
     mode: fileModeName(node.mode),
     tracking: node.tracking,
+  };
+}
+
+// --- v1 task 3 (side-by-side text diff + binary-aware diff) ---------------
+
+function diffActionName(action: Action): DiffActionDto {
+  switch (action) {
+    case Action.KEEP:
+      return "KEEP";
+    case Action.ADD:
+      return "ADD";
+    case Action.DELETE:
+      return "DELETE";
+    case Action.MOVE:
+      return "MOVE";
+    case Action.COPY:
+      return "COPY";
+  }
+}
+
+function toRevisionRefDto(identifier: RevisionIdentifier | undefined): RevisionRefDto {
+  return {
+    branchId: encodeHexBytes(identifier?.branchId ?? new Uint8Array(0)),
+    number: String(identifier?.number ?? 0n),
+  };
+}
+
+/** Converts a gRPC `lore.thin_client.v1.DiffChange` to the BFF's JSON contract. */
+export function toDiffChangeDto(change: DiffChange): DiffChangeDto {
+  return {
+    path: change.path,
+    pathFrom: change.pathFrom,
+    action: diffActionName(change.action),
+    nodeType: nodeTypeName(change.nodeType),
+    contentFrom: encodeHexBytes(change.contentFrom),
+    contentTo: encodeHexBytes(change.contentTo),
+    automerged: change.automerged,
+    linkRepositoryIndex: change.linkRepositoryIndex,
+    tracking: change.tracking,
+  };
+}
+
+/** Converts a gRPC `lore.thin_client.v1.RevisionDiffHeader` to the BFF's JSON contract. */
+export function toRevisionDiffHeaderDto(header: RevisionDiffHeader): RevisionDiffHeaderDto {
+  return {
+    identifierFrom: toRevisionRefDto(header.identifierFrom),
+    signatureFrom: encodeHexBytes(header.signatureFrom),
+    identifierTo: toRevisionRefDto(header.identifierTo),
+    signatureTo: encodeHexBytes(header.signatureTo),
+    identifierBase: header.identifierBase ? toRevisionRefDto(header.identifierBase) : null,
+    signatureBase: header.signatureBase ? encodeHexBytes(header.signatureBase) : null,
+  };
+}
+
+/**
+ * Converts a gRPC `lore.thin_client.v1.DiffConflict` to the BFF's JSON
+ * contract's minimal summary shape -- see `DiffConflictSummaryDto`'s doc
+ * comment on why this task doesn't expand the full conflict content (task
+ * 7's scope, not this one).
+ */
+export function toDiffConflictSummaryDto(conflict: DiffConflict): DiffConflictSummaryDto {
+  return {
+    changeFromPath: conflict.changeFrom?.path ?? "",
+    changeToPath: conflict.changeTo?.path ?? "",
+  };
+}
+
+/** Converts a gRPC `lore.thin_client.v1.DiffPartition` to the BFF's JSON contract. */
+export function toDiffPartitionDto(partition: DiffPartition): DiffPartitionDto {
+  return {
+    index: partition.index,
+    linkPartition: encodeHexBytes(partition.linkPartition),
+  };
+}
+
+/**
+ * Converts a gRPC `lore.thin_client.v1.ContentDiffHeader` plus the BFF's
+ * already-concatenated chunk text (see `ContentDiffResponseBody`'s doc
+ * comment on why concatenation must happen before this point) into the
+ * BFF's JSON contract.
+ */
+export function toContentDiffResponseBody(header: ContentDiffHeader, diff: string): ContentDiffResponseBody {
+  return {
+    linesAdded: Number(header.linesAdded),
+    linesDeleted: Number(header.linesDeleted),
+    binary: header.binary,
+    truncated: header.truncated,
+    hasConflicts: header.hasConflicts,
+    conflictCount: header.conflictCount,
+    diff,
   };
 }
