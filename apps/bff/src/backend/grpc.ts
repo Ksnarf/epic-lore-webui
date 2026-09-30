@@ -29,7 +29,7 @@ import {
   type Resource,
 } from "@epic-lore-webui/lore-client/gen/lock_pb";
 import { filterBranchesForRepository } from "./branch-scope.js";
-import { NotFoundError } from "./errors.js";
+import { ForbiddenError, NotFoundError, UnauthorizedError } from "./errors.js";
 import type {
   ContentDiffParams,
   ContentDiffResult,
@@ -67,12 +67,41 @@ import type {
  * therefore redundant once this metadata is attached (not incorrect --
  * harmless double-filtering), kept as defense-in-depth in case a future
  * server build relaxes or changes this scoping.
+ *
+ * v1 task 8 adds `authToken`: the per-repository AuthZ token
+ * (`ExchangeUserTokenForMultiresourceToken`, see ../auth/authz-client.ts),
+ * attached as a plain `authorization: Bearer` header alongside the binary
+ * repository-scoping metadata -- confirmed live both are required together
+ * (see this file's `createGrpcBackend` doc comment for the end-to-end
+ * finding). `undefined` (fixture-mode callers never reach this function;
+ * an authenticated `grpc`-mode caller with no session was already rejected
+ * by ../server.ts's auth-gate hook before reaching here) omits the header
+ * entirely, which a real `lore-server` treats as `Unauthenticated` -- not
+ * silently downgraded to an anonymous call.
  */
-function repositoryHeaders(repositoryId: Uint8Array): Headers {
+function repositoryHeaders(repositoryId: Uint8Array, authToken?: string): Headers {
   const value = Buffer.from(repositoryId).toString("base64");
   const headers = new Headers();
   headers.set("urc-repository-id-bin", value);
   headers.set("lore-partition-bin", value);
+  if (authToken) {
+    headers.set("authorization", `Bearer ${authToken}`);
+  }
+  return headers;
+}
+
+/**
+ * v1 task 8. For the two `RepositoryService` calls (`listRepositories`/
+ * `getRepository`) -- confirmed live these need only a plain bearer token,
+ * no repository-scoping metadata and no per-repository AuthZ exchange (see
+ * ../auth/request-context.ts's doc comment for the live finding).
+ */
+function bearerHeaders(authToken?: string): Headers | undefined {
+  if (!authToken) {
+    return undefined;
+  }
+  const headers = new Headers();
+  headers.set("authorization", `Bearer ${authToken}`);
   return headers;
 }
 
@@ -94,9 +123,9 @@ export function createGrpcBackend(addr: string): LoreBackend {
   const lockClient = createClient(LockService, transport);
 
   return {
-    async listRepositories(): Promise<Repository[]> {
+    async listRepositories(authToken?: string): Promise<Repository[]> {
       const out: Repository[] = [];
-      for await (const response of repositoryClient.repositoryList({})) {
+      for await (const response of repositoryClient.repositoryList({}, { headers: bearerHeaders(authToken) })) {
         if (response.repository) {
           out.push(response.repository);
         }
@@ -104,32 +133,39 @@ export function createGrpcBackend(addr: string): LoreBackend {
       return out;
     },
 
-    async getRepository(id: Uint8Array): Promise<Repository | null> {
+    async getRepository(id: Uint8Array, authToken?: string): Promise<Repository | null> {
       try {
-        const response = await repositoryClient.repositoryGet({ query: { case: "id", value: id } });
+        const response = await repositoryClient.repositoryGet(
+          { query: { case: "id", value: id } },
+          { headers: bearerHeaders(authToken) },
+        );
         return response.repository ?? null;
       } catch (err) {
         if (isNotFound(err)) {
           return null;
         }
-        throw err;
+        throw mapAuthError(err);
       }
     },
 
-    async listBranchesForRepository(repository: Repository): Promise<Branch[]> {
+    async listBranchesForRepository(repository: Repository, authToken?: string): Promise<Branch[]> {
       const all: Branch[] = [];
-      for await (const response of revisionClient.branchList(
-        {},
-        { headers: repositoryHeaders(repository.id) },
-      )) {
-        if (response.branch) {
-          all.push(response.branch);
+      try {
+        for await (const response of revisionClient.branchList(
+          {},
+          { headers: repositoryHeaders(repository.id, authToken) },
+        )) {
+          if (response.branch) {
+            all.push(response.branch);
+          }
         }
+      } catch (err) {
+        throw mapAuthError(err);
       }
       return filterBranchesForRepository(all, repository);
     },
 
-    async getRevisionTree(params: RevisionTreeParams): Promise<RevisionTreeResult> {
+    async getRevisionTree(params: RevisionTreeParams, authToken?: string): Promise<RevisionTreeResult> {
       const request = create(RevisionTreeRequestSchema, {
         query: {
           case: "identifier",
@@ -143,7 +179,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
       const nodes: RevisionTreeResult["nodes"] = [];
       try {
         for await (const response of thinClient.revisionTree(request, {
-          headers: repositoryHeaders(params.repositoryId),
+          headers: repositoryHeaders(params.repositoryId, authToken),
         })) {
           if (response.payload.case === "header") {
             header = response.payload.value;
@@ -155,7 +191,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
         if (isNotFound(err)) {
           throw new NotFoundError("branch or revision not found");
         }
-        throw err;
+        throw mapAuthError(err);
       }
       if (!header) {
         throw new NotFoundError("RevisionTree stream produced no header (branch or revision not found)");
@@ -163,7 +199,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
       return { header, nodes };
     },
 
-    async listRevisions(params: RevisionListParams): Promise<RevisionListResult> {
+    async listRevisions(params: RevisionListParams, authToken?: string): Promise<RevisionListResult> {
       const request = create(RevisionListRequestSchema, {
         start: params.cursor
           ? { case: "signature", value: params.cursor }
@@ -174,7 +210,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
       });
       try {
         const response = await revisionClient.revisionList(request, {
-          headers: repositoryHeaders(params.repositoryId),
+          headers: repositoryHeaders(params.repositoryId, authToken),
         });
         return {
           items: response.items,
@@ -185,11 +221,11 @@ export function createGrpcBackend(addr: string): LoreBackend {
         if (isNotFound(err)) {
           throw new NotFoundError("branch or revision cursor not found");
         }
-        throw err;
+        throw mapAuthError(err);
       }
     },
 
-    async getRevisionInfo(params: RevisionInfoParams): Promise<Revision | null> {
+    async getRevisionInfo(params: RevisionInfoParams, authToken?: string): Promise<Revision | null> {
       const request = create(RevisionInfoRequestSchema, {
         query: {
           case: "identifier",
@@ -198,14 +234,14 @@ export function createGrpcBackend(addr: string): LoreBackend {
       });
       try {
         const response = await thinClient.revisionInfo(request, {
-          headers: repositoryHeaders(params.repositoryId),
+          headers: repositoryHeaders(params.repositoryId, authToken),
         });
         return response.revision ?? null;
       } catch (err) {
         if (isNotFound(err)) {
           return null;
         }
-        throw err;
+        throw mapAuthError(err);
       }
     },
 
@@ -220,14 +256,20 @@ export function createGrpcBackend(addr: string): LoreBackend {
      * the only wire-level scoping mechanism, exactly as task 1 found for the
      * other services.
      */
-    async queryLocks(params: QueryLocksParams): Promise<Lock[]> {
+    async queryLocks(params: QueryLocksParams, authToken?: string): Promise<Lock[]> {
       const request = create(QueryRequestSchema, {
         branch: params.branchId,
         owner: params.owner,
         description: params.description,
       });
-      const response = await lockClient.query(request, { headers: repositoryHeaders(params.repositoryId) });
-      return response.result;
+      try {
+        const response = await lockClient.query(request, {
+          headers: repositoryHeaders(params.repositoryId, authToken),
+        });
+        return response.result;
+      } catch (err) {
+        throw mapAuthError(err);
+      }
     },
 
     /**
@@ -242,7 +284,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
      * simplification of what the proto *says*, not a proven real-server
      * behavior -- see tasks.md task 5.
      */
-    async acquireLock(params: LockMutationParams): Promise<Lock[]> {
+    async acquireLock(params: LockMutationParams, authToken?: string): Promise<Lock[]> {
       const request = create(LockRequestSchema, {
         resources: [
           create(ResourceSchema, {
@@ -252,8 +294,14 @@ export function createGrpcBackend(addr: string): LoreBackend {
           }),
         ],
       });
-      const response = await lockClient.lock(request, { headers: repositoryHeaders(params.repositoryId) });
-      return response.locks;
+      try {
+        const response = await lockClient.lock(request, {
+          headers: repositoryHeaders(params.repositoryId, authToken),
+        });
+        return response.locks;
+      } catch (err) {
+        throw mapAuthError(err);
+      }
     },
 
     /**
@@ -267,7 +315,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
      * with the fixture backend and with what the proto claims, even though
      * the real wire behavior differs.
      */
-    async releaseLock(params: LockMutationParams): Promise<Resource[]> {
+    async releaseLock(params: LockMutationParams, authToken?: string): Promise<Resource[]> {
       const request = create(UnlockRequestSchema, {
         resources: [
           create(ResourceSchema, {
@@ -278,13 +326,15 @@ export function createGrpcBackend(addr: string): LoreBackend {
         ],
       });
       try {
-        const response = await lockClient.unlock(request, { headers: repositoryHeaders(params.repositoryId) });
+        const response = await lockClient.unlock(request, {
+          headers: repositoryHeaders(params.repositoryId, authToken),
+        });
         return response.resources;
       } catch (err) {
         if (isNotFound(err)) {
           return [];
         }
-        throw err;
+        throw mapAuthError(err);
       }
     },
 
@@ -298,7 +348,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
      * until proven, since the demo stack's seeded branches have no revision
      * content to diff (see tasks.md task 2's note on why).
      */
-    async getRevisionDiff(params: RevisionDiffParams): Promise<RevisionDiffResult> {
+    async getRevisionDiff(params: RevisionDiffParams, authToken?: string): Promise<RevisionDiffResult> {
       const request = create(RevisionDiffRequestSchema, {
         queryFrom: {
           case: "identifierFrom",
@@ -317,7 +367,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
       const partitions: DiffPartition[] = [];
       try {
         for await (const response of thinClient.revisionDiff(request, {
-          headers: repositoryHeaders(params.repositoryId),
+          headers: repositoryHeaders(params.repositoryId, authToken),
         })) {
           switch (response.payload.case) {
             case "header":
@@ -338,7 +388,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
         if (isNotFound(err)) {
           throw new NotFoundError("branch or revision not found");
         }
-        throw err;
+        throw mapAuthError(err);
       }
       if (!header) {
         throw new NotFoundError("RevisionDiff stream produced no header (branch or revision not found)");
@@ -356,7 +406,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
      * comment on why a chunk boundary must never be assumed to land on a
      * line boundary.
      */
-    async getContentDiff(params: ContentDiffParams): Promise<ContentDiffResult> {
+    async getContentDiff(params: ContentDiffParams, authToken?: string): Promise<ContentDiffResult> {
       const request = create(ContentDiffRequestSchema, {
         addressFrom: params.addressFrom,
         addressTo: params.addressTo,
@@ -368,14 +418,18 @@ export function createGrpcBackend(addr: string): LoreBackend {
 
       let header: ContentDiffHeader | undefined;
       let diff = "";
-      for await (const response of thinClient.contentDiff(request, {
-        headers: repositoryHeaders(params.repositoryId),
-      })) {
-        if (response.payload.case === "header") {
-          header = response.payload.value;
-        } else if (response.payload.case === "chunk") {
-          diff += response.payload.value.diff;
+      try {
+        for await (const response of thinClient.contentDiff(request, {
+          headers: repositoryHeaders(params.repositoryId, authToken),
+        })) {
+          if (response.payload.case === "header") {
+            header = response.payload.value;
+          } else if (response.payload.case === "chunk") {
+            diff += response.payload.value.diff;
+          }
         }
+      } catch (err) {
+        throw mapAuthError(err);
       }
       if (!header) {
         throw new NotFoundError("ContentDiff stream produced no header");
@@ -387,4 +441,24 @@ export function createGrpcBackend(addr: string): LoreBackend {
 
 function isNotFound(err: unknown): boolean {
   return err instanceof ConnectError && err.code === Code.NotFound;
+}
+
+/**
+ * v1 task 8. Translates the two auth-shaped `ConnectError` codes real
+ * `lore-server`/`epic-lore-authz` calls can now return into this repo's own
+ * error types (../backend/errors.ts), which ../routes/repositories.ts's
+ * `handleRouteError` maps to clean HTTP statuses -- everything else passes
+ * through unchanged (still a raw, honest 500 via Fastify's default error
+ * handler, same as before this task).
+ */
+function mapAuthError(err: unknown): unknown {
+  if (err instanceof ConnectError) {
+    if (err.code === Code.Unauthenticated) {
+      return new UnauthorizedError(err.message);
+    }
+    if (err.code === Code.PermissionDenied) {
+      return new ForbiddenError(err.message);
+    }
+  }
+  return err;
 }

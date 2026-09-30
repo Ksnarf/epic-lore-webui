@@ -6,6 +6,7 @@ import { RepositoriesRoute } from "./routes/repositories.js";
 import { RepositoryBranchesRoute } from "./routes/repository-branches.js";
 import { RepositoryLocksRoute } from "./routes/repository-locks.js";
 import { RevisionDiffRoute } from "./routes/revision-diff.js";
+import { SignInRoute } from "./routes/sign-in.js";
 
 // TanStack Query owns all server/RPC data (docs/design/stack-decision.md,
 // "State management"). One shared client for the whole app.
@@ -18,6 +19,7 @@ const queryClient = new QueryClient();
 // diffs, etc.) add routes here without disturbing these.
 const router = createBrowserRouter([
   { path: "/", element: <RepositoriesRoute /> },
+  { path: "/sign-in", element: <SignInRoute /> },
   { path: "/repositories/:repositoryId", element: <RepositoryBranchesRoute /> },
   { path: "/repositories/:repositoryId/locks", element: <RepositoryLocksRoute /> },
   {

@@ -36,17 +36,21 @@ export function registerDiffRoutes(app: FastifyInstance, backend: LoreBackend): 
       const fromNumber = parseRevisionNumber(request.params.from);
       const toNumber = parseRevisionNumber(request.params.to);
 
-      const repository = await backend.getRepository(repositoryId);
+      const repository = await backend.getRepository(repositoryId, request.auth?.sessionToken);
       if (!repository) {
         throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
       }
 
-      const { header, changes, conflicts, partitions } = await backend.getRevisionDiff({
-        repositoryId,
-        branchId,
-        fromNumber,
-        toNumber,
-      });
+      const authToken = await request.auth?.repositoryToken(repositoryId);
+      const { header, changes, conflicts, partitions } = await backend.getRevisionDiff(
+        {
+          repositoryId,
+          branchId,
+          fromNumber,
+          toNumber,
+        },
+        authToken,
+      );
       const body: RevisionDiffResponseBody = {
         header: toRevisionDiffHeaderDto(header),
         changes: changes.map(toDiffChangeDto),
@@ -70,12 +74,13 @@ export function registerDiffRoutes(app: FastifyInstance, backend: LoreBackend): 
       const addressFrom = parseHexId(request.query.from ?? "", "from");
       const addressTo = parseHexId(request.query.to ?? "", "to");
 
-      const repository = await backend.getRepository(repositoryId);
+      const repository = await backend.getRepository(repositoryId, request.auth?.sessionToken);
       if (!repository) {
         throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
       }
 
-      const { header, diff } = await backend.getContentDiff({ repositoryId, addressFrom, addressTo });
+      const authToken = await request.auth?.repositoryToken(repositoryId);
+      const { header, diff } = await backend.getContentDiff({ repositoryId, addressFrom, addressTo }, authToken);
       const body: ContentDiffResponseBody = toContentDiffResponseBody(header, diff);
       return body;
     } catch (err) {

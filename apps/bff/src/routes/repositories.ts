@@ -6,7 +6,7 @@ import type {
   RevisionTreeResponseBody,
 } from "@epic-lore-webui/api-types";
 import type { FastifyInstance } from "fastify";
-import { BadRequestError, ConflictError, NotFoundError } from "../backend/errors.js";
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from "../backend/errors.js";
 import type { LoreBackend } from "../backend/types.js";
 import { toBranchSummary, toRepositorySummary, toTreeNodeDto } from "../dto/lore.js";
 
@@ -41,8 +41,8 @@ function parseDepth(value: string | undefined): number | undefined {
  * it never knows whether that's the fixture or a real gRPC backend.
  */
 export function registerRepositoryRoutes(app: FastifyInstance, backend: LoreBackend): void {
-  app.get("/api/repositories", async (): Promise<RepositoryListResponseBody> => {
-    const repositories = await backend.listRepositories();
+  app.get("/api/repositories", async (request): Promise<RepositoryListResponseBody> => {
+    const repositories = await backend.listRepositories(request.auth?.sessionToken);
     return { repositories: repositories.map(toRepositorySummary) };
   });
 
@@ -51,7 +51,7 @@ export function registerRepositoryRoutes(app: FastifyInstance, backend: LoreBack
     async (request, reply) => {
       try {
         const repositoryId = parseHexId(request.params.repositoryId, "repositoryId");
-        const repository = await backend.getRepository(repositoryId);
+        const repository = await backend.getRepository(repositoryId, request.auth?.sessionToken);
         if (!repository) {
           throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
         }
@@ -68,11 +68,12 @@ export function registerRepositoryRoutes(app: FastifyInstance, backend: LoreBack
     async (request, reply) => {
       try {
         const repositoryId = parseHexId(request.params.repositoryId, "repositoryId");
-        const repository = await backend.getRepository(repositoryId);
+        const repository = await backend.getRepository(repositoryId, request.auth?.sessionToken);
         if (!repository) {
           throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
         }
-        const branches = await backend.listBranchesForRepository(repository);
+        const authToken = await request.auth?.repositoryToken(repositoryId);
+        const branches = await backend.listBranchesForRepository(repository, authToken);
         const body: BranchListResponseBody = {
           branches: branches.map((branch) => toBranchSummary(branch, repository)),
         };
@@ -92,17 +93,21 @@ export function registerRepositoryRoutes(app: FastifyInstance, backend: LoreBack
       const branchId = parseHexId(request.params.branchId, "branchId");
       const maxDepth = parseDepth(request.query.depth);
 
-      const repository = await backend.getRepository(repositoryId);
+      const repository = await backend.getRepository(repositoryId, request.auth?.sessionToken);
       if (!repository) {
         throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
       }
 
-      const { header, nodes } = await backend.getRevisionTree({
-        repositoryId,
-        branchId,
-        pathPrefix: request.query.path,
-        maxDepth,
-      });
+      const authToken = await request.auth?.repositoryToken(repositoryId);
+      const { header, nodes } = await backend.getRevisionTree(
+        {
+          repositoryId,
+          branchId,
+          pathPrefix: request.query.path,
+          maxDepth,
+        },
+        authToken,
+      );
 
       const body: RevisionTreeResponseBody = {
         branchId: encodeHexBytes(header.identifier?.branchId ?? branchId),
@@ -121,6 +126,12 @@ export function registerRepositoryRoutes(app: FastifyInstance, backend: LoreBack
 export function handleRouteError(err: unknown, reply: import("fastify").FastifyReply) {
   if (err instanceof BadRequestError) {
     return reply.code(400).send({ error: err.message });
+  }
+  if (err instanceof UnauthorizedError) {
+    return reply.code(401).send({ error: err.message });
+  }
+  if (err instanceof ForbiddenError) {
+    return reply.code(403).send({ error: err.message });
   }
   if (err instanceof NotFoundError) {
     return reply.code(404).send({ error: err.message });

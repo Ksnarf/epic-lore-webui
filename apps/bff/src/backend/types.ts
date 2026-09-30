@@ -166,39 +166,64 @@ export interface ContentDiffResult {
  * (see ../config.ts) -- default `fixture`, so the app runs with no
  * `lore-server` reachable at all.
  */
+/**
+ * v1 task 8 (Okta auth). Every `LoreBackend` method takes a trailing,
+ * optional `authToken` -- the bearer token the `grpc` backend attaches to
+ * that specific call (see grpc.ts's `bearerHeaders`/`repositoryHeaders`).
+ * `fixture.ts` ignores it entirely (no auth concept -- see tasks.md task 8's
+ * fixture-stays-auth-optional decision).
+ *
+ * Two DIFFERENT kinds of token, not interchangeable, depending on which
+ * `lore-server`/`epic-lore-authz` service the method calls underneath (see
+ * ../auth/authz-client.ts's doc comment for the live findings this is based
+ * on) -- callers (../routes/*.ts) get both from `request.auth`
+ * (../auth/request-context.ts):
+ *
+ * - **Session token** (`request.auth.sessionToken`): the plain AuthN token
+ *   from the login session cookie. Correct for `listRepositories`/
+ *   `getRepository` (`RepositoryService` -- confirmed live it needs no
+ *   per-repository scoping).
+ * - **Repository token** (`await request.auth.repositoryToken(repositoryId)`):
+ *   a short-lived AuthZ token scoped to exactly that one repository's
+ *   `urc-<hex id>` resource, minted via `ExchangeUserTokenForMultiresourceToken`.
+ *   Required by every other method here (`RevisionService`/
+ *   `ThinClientService`/`LockService` all returned `PermissionDenied` with
+ *   the plain session token, confirmed live -- see grpc.ts's
+ *   `repositoryHeaders` doc comment, task 1's original finding).
+ */
 export interface LoreBackend {
-  listRepositories(): Promise<Repository[]>;
-  getRepository(id: Uint8Array): Promise<Repository | null>;
+  listRepositories(authToken?: string): Promise<Repository[]>;
+  getRepository(id: Uint8Array, authToken?: string): Promise<Repository | null>;
   /**
    * Branches belonging to `repository`, already filtered down from the
    * server's global branch list -- see branch-scope.ts for why that
    * filtering has to happen here rather than being a server-side query
    * parameter.
    */
-  listBranchesForRepository(repository: Repository): Promise<Branch[]>;
-  getRevisionTree(params: RevisionTreeParams): Promise<RevisionTreeResult>;
+  listBranchesForRepository(repository: Repository, authToken?: string): Promise<Branch[]>;
+  getRevisionTree(params: RevisionTreeParams, authToken?: string): Promise<RevisionTreeResult>;
   /** A single page of a branch's revision history, newest-to-oldest. */
-  listRevisions(params: RevisionListParams): Promise<RevisionListResult>;
+  listRevisions(params: RevisionListParams, authToken?: string): Promise<RevisionListResult>;
   /** The full record (including ancestry) for one revision. `null` if not found. */
-  getRevisionInfo(params: RevisionInfoParams): Promise<Revision | null>;
+  getRevisionInfo(params: RevisionInfoParams, authToken?: string): Promise<Revision | null>;
 
   /**
    * v1 task 5: locks matching the (optional) branch/owner/description
    * filters, scoped to one repository. Omitting `branchId` spans every
    * branch of the repository -- see `QueryLocksParams`'s doc comment.
    */
-  queryLocks(params: QueryLocksParams): Promise<Lock[]>;
+  queryLocks(params: QueryLocksParams, authToken?: string): Promise<Lock[]>;
   /** `urc.lock.LockService.Lock` -- errors (throws) if the resource is already locked, per the proto's own doc comment. */
-  acquireLock(params: LockMutationParams): Promise<Lock[]>;
+  acquireLock(params: LockMutationParams, authToken?: string): Promise<Lock[]>;
   /** `urc.lock.LockService.Unlock` -- no-ops (returns an empty array) if no lock exists for the resource. */
-  releaseLock(params: LockMutationParams): Promise<Resource[]>;
+  releaseLock(params: LockMutationParams, authToken?: string): Promise<Resource[]>;
 
   /**
    * v1 task 3: the per-path change list between two revisions on one
    * branch. See `RevisionDiffParams`'s doc comment for the same-branch
    * scope decision.
    */
-  getRevisionDiff(params: RevisionDiffParams): Promise<RevisionDiffResult>;
+  getRevisionDiff(params: RevisionDiffParams, authToken?: string): Promise<RevisionDiffResult>;
   /** v1 task 3: a unified text diff (or binary/truncated flag) between two CAS addresses. */
-  getContentDiff(params: ContentDiffParams): Promise<ContentDiffResult>;
+  getContentDiff(params: ContentDiffParams, authToken?: string): Promise<ContentDiffResult>;
 }

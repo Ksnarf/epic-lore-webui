@@ -862,32 +862,133 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       RPCs no browser transport (grpc-web included) can drive. v1 should
       scope this to read-only conflict display unless new thin-client write
       RPCs are added server-side.
-- [ ] 8. Okta auth via `epic-lore-authz`, including IdP-initiated tile
-      entry -- a web surface is what makes tile-initiated login possible
-      at all; the CLI has no equivalent entry point. API contract study
-      (`docs/design/api-contract.md` section 3) confirms both halves of
-      this are currently unbuilt: (a) the browser never receives a token in
-      the existing CLI-shaped flow (`/login/{login_code}` requires a
-      CLI-minted code; the callback only marks a DB session authenticated
-      for the CLI to poll) -- a web login needs a new browser-native
-      entry+token-handoff path on `epic-lore-authz` (or the BFF); (b)
-      IdP-initiated entry needs its own acceptance path distinct from the
-      current state-bound SP-initiated flow (which correctly rejects any
-      request with no pre-existing session). Both need design + security
-      review on `epic-lore-authz` before this task can start; not
-      resolved by this study. **VERIFIED (`docs/design/stack-decision.md`,
-      "Critical verified finding"):** the (a)-side blockage above is no
-      longer speculative -- `ExchangeExternalTokenForUserToken` is
-      confirmed an unimplemented stub (`Status::unimplemented`,
-      `epic-lore-authz` `crates/lore-authz-server/src/grpc.rs:235-241`,
-      verified 2026-09-20 against local checkout `4726ad6`, 7 doc-only
-      commits ahead of the pinned `v0.2.0`), and its design
-      (`docs/architecture.md:129-137`) only proposes `api-key`,
-      `github-actions`, and `lore` token types -- no Okta/OIDC ID token
-      type. Web login cannot delegate token minting to that RPC today;
-      this is a verified upstream Phase 1b dependency on `epic-lore-authz`
-      (new/extended token type or a dedicated web-login endpoint, plus
-      security review), not just a documented gap.
+- [x] [verified-e2e] 8. Okta auth via `epic-lore-authz` (SP-initiated web
+      login; IdP-initiated Okta-tile entry NOT built -- see "Not done"
+      below). Built per `docs/design/api-contract.md` section 3, Option A:
+      the BFF plays the CLI's role against `epic-lore-authz`'s EXISTING,
+      **unmodified** `UrcAuthApi` (`StartAuthSession`/`GetAuthSession`/
+      `ExchangeUserTokenForMultiresourceToken`) -- zero changes to
+      `epic-lore-authz`.
+
+      **CORRECTION to this task's own prior entry above:** that entry
+      concluded "blocked" on `ExchangeExternalTokenForUserToken` being an
+      unimplemented stub. That RPC is part of a DIFFERENT design (Option B
+      in `api-contract.md` section 3: the BFF doing its own OIDC exchange
+      and minting a token directly from an external IdP token) that this
+      implementation does not use and never needed. Option A -- the BFF
+      calling `StartAuthSession`/`GetAuthSession` exactly the way the `lore`
+      CLI already does (`epic-lore-authz`'s own `docs/architecture.md`,
+      "Human login flow (OIDC), end to end") -- was always fully buildable
+      with zero `epic-lore-authz` changes: that Phase 1b flow is
+      implemented and production-tested upstream (`epic-lore-authz`
+      README.md's "Status" section: "Phase 1b ... is implemented and tested
+      against real Dex"). The prior entry's "blocked" conclusion was a
+      misread of which option `api-contract.md` actually recommended, not a
+      real upstream gap. The IdP-initiated-tile half of this task's title
+      (section 3's problem 2, a distinct, harder problem needing its own
+      new acceptance path on `epic-lore-authz`) remains correctly
+      unbuilt -- see "Not done" below -- but SP-initiated web login was
+      never blocked.
+
+      **Login-completion UX decision:** `epic-lore-authz`'s browser-facing
+      flow ends on its own static "you are signed in, close this tab" page
+      (`lore-authz-server/src/http.rs`'s `login_done`), with no redirect
+      back into any app -- by design, and not something this task may
+      change. A same-tab `GET /login` redirect therefore cannot return
+      control to the UI. Fix: the web app's sign-in screen opens `/login`
+      in a SEPARATE window (`window.open`) and keeps the original tab on a
+      "waiting for sign-in" screen that polls `GET /api/auth/status`; the
+      BFF's status route itself calls `GetAuthSession` on each poll (the
+      same polling role a CLI already plays) and mints the session cookie
+      the moment it resolves. Proven live, including the genuine
+      still-pending state (not just success): see log.log for the full
+      command/response trail.
+
+      **Per-request token plumbing:** two different bearer tokens,
+      confirmed live which RPCs need which (`apps/bff/src/auth/
+      authz-client.ts`'s doc comment) -- the session's own AuthN token
+      (from `GetAuthSession`) for `RepositoryService.RepositoryList`/
+      `RepositoryGet` (confirmed live these need no resource scoping), and
+      a per-repository AuthZ token (`ExchangeUserTokenForMultiresourceToken`,
+      resource id `urc-<hex repository id>`, cached per `(userId,
+      resourceId)`) for every `RevisionService`/`ThinClientService`/
+      `LockService` call, all of which return `PermissionDenied` with the
+      plain session token. `LoreBackend` (`apps/bff/src/backend/types.ts`)
+      grew a trailing optional `authToken` on every method; route handlers
+      (`apps/bff/src/routes/*.ts`) source it from `request.auth`
+      (`apps/bff/src/auth/request-context.ts`), decorated onto every
+      request by a new `onRequest` hook in `server.ts`.
+
+      **Built:** encrypted (AES-256-GCM, Node `node:crypto`, no new
+      dependency) `HttpOnly`/`SameSite=Lax` session cookie holding the
+      `UserToken`, keyed by a new `SESSION_SECRET` env var (name only,
+      required when `LORE_BACKEND=grpc`, auto-ephemeral in fixture mode);
+      `GET /login`, `GET /logout`, `GET /api/auth/status`
+      (`apps/bff/src/routes/auth.ts`); an `onRequest` auth gate that 401s
+      every unauthenticated `/api/*` call in `grpc` mode and leaves
+      `fixture` mode fully auth-optional (deliberate v1 scope decision --
+      fixture mode exists precisely so the app runs with zero external
+      dependencies, including `epic-lore-authz`); `PermissionDenied`/
+      `Unauthenticated` `ConnectError`s now map to real `403`/`401`
+      (`apps/bff/src/backend/errors.ts`, `grpc.ts`'s `mapAuthError`) instead
+      of a raw 500, now that auth is real; web sign-in screen
+      (`apps/web/src/routes/sign-in.tsx`), signed-in indicator + logout in
+      the shell (`apps/web/src/components/page-shell.tsx`), and a global
+      401 -> redirect-to-`/sign-in` handler
+      (`apps/web/src/api/lore-client.ts`).
+
+      **Verified live** (demo stack, BFF in `LORE_BACKEND=grpc`, zero
+      shims/hand-injected tokens anywhere -- see log.log for full
+      command/response evidence): unauthenticated `/api/*` -> real `401`;
+      `GET /login` -> real `302` to `epic-lore-authz`'s `login_url` +
+      login-attempt cookie set; followed that URL through the REAL Dex mock
+      connector (`curl -L`, no credentials, exactly how `demo/scripts/
+      verify.sh` drives it) -> landed on `epic-lore-authz`'s own
+      unmodified "you are signed in" page; polled `/api/auth/status` with
+      the same cookie jar -> real minted session, login-attempt cookie
+      cleared; separately proved the PENDING poll path is genuine (two
+      polls against a not-yet-followed `login_url` both returned
+      `pending:true` from a live `GetAuthSession` call, then flipped to
+      authenticated once that login completed); with the real session:
+      `GET /api/repositories` returned both real demo repos; `GET
+      .../branches` returned the real branch (per-repository AuthZ
+      exchange working); `POST`/`GET`/`DELETE .../locks` acquired, listed,
+      and released a real lock attributed to `owner: "af862d98-..."` --
+      the actual logged-in user's real id, not a fixture/hardcoded
+      owner, closing the loop task 5 could only test with a temporary
+      `LOCKTEST` bearer-token interceptor; `GET /logout` cleared both
+      cookies and the next `/api/repositories` correctly 401'd again; a
+      garbage/tampered session cookie was rejected cleanly (401, no crash)
+      and a garbage login-attempt cookie was treated as unauthenticated
+      (200, not an error). `pnpm -r typecheck`/`lint`/`build` all exit 0
+      (5/5 workspaces incl. the newly-added `apps/bff` test runner);
+      `apps/bff` vitest 11/11 pass (new: AES-GCM round-trip/tamper/
+      wrong-secret tests, session/login-attempt cookie round-trip +
+      expiry tests -- pure logic, no network); `apps/web` vitest 14/14
+      pass (pre-existing suites unaffected).
+
+      **Not done / unproven, named honestly:**
+      - IdP-initiated Okta-tile entry (this task's own title) is genuinely
+        not built -- `api-contract.md` section 3's problem 2 is real and
+        was correctly never attempted here: it needs a second, separate
+        acceptance path on `epic-lore-authz` itself (Okta's third-party-
+        initiated-login pattern), which is that project's own scope and
+        security review, not something addable from the BFF side alone.
+      - `PermissionDenied` -> `403` mapping (`grpc.ts`'s `mapAuthError`) is
+        code-level only, not re-verified live this session: no repository
+        existed in the demo stack where the logged-in test user is
+        authenticated but ungranted, to trigger it for real (the same
+        mock IdP user holds `admin` on both seeded demo repos from task
+        1/5's validation). `Unauthenticated` -> `401` from a live
+        server-side rejection (as opposed to the BFF's own local
+        expired/absent-session check) was likewise not separately forced.
+      - CSRF: the mutating lock routes rely on `SameSite=Lax` cookies (a
+        cross-site fetch/POST does not carry a `Lax` cookie at all) as
+        their CSRF defense; `@fastify/csrf-protection` stays registered but
+        unused, as it was before this task -- not wired to any route.
+      - IdP-side MFA/step-up, token refresh, and multi-user concurrent
+        sessions were not exercised (the demo stack's Dex mock connector
+        has exactly one fixed identity, no password, no MFA).
 - [ ] 9. Permissions view backed by `epic-lore-authz` roles/grants. API
       contract study (`docs/design/api-contract.md` section 4): a "my
       permissions" view is fully supported today via

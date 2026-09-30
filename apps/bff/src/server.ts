@@ -4,11 +4,15 @@ import Fastify from "fastify";
 import fastifyCookie from "@fastify/cookie";
 import fastifyCsrf from "@fastify/csrf-protection";
 import fastifyStatic from "@fastify/static";
+import { createAuthzClient } from "./auth/authz-client.js";
+import { buildAuthContext } from "./auth/request-context.js";
+import { readSessionCookie } from "./auth/session.js";
 import { createFixtureBackend } from "./backend/fixture.js";
 import { createGrpcBackend } from "./backend/grpc.js";
 import { loadConfig } from "./config.js";
 import { registerHealthzRoute } from "./routes/healthz.js";
 import { registerApiRoutes } from "./routes/api.js";
+import { registerAuthRoutes } from "./routes/auth.js";
 import { registerDiffRoutes } from "./routes/diff.js";
 import { registerLockRoutes } from "./routes/locks.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
@@ -30,10 +34,11 @@ export async function buildServer() {
 
   await app.register(fastifyCookie);
 
-  // TODO(task 8, Okta auth): once the BFF holds a real encrypted session
-  // cookie (docs/design/stack-decision.md, "Auth (v1 shape)"), csrf
-  // protection needs a cookie-backed secret store wired here, not the
-  // in-memory default. Stubbed for scaffold only.
+  // Not wired to any route yet (v1 task 8 built session auth, not a
+  // state-changing form/route that needs CSRF tokens -- /login and /logout
+  // are simple GETs, and every mutating /api/* route is same-origin JSON
+  // fetch, not a browser form post). Left registered, unused, as scaffolded;
+  // revisit if a future task adds a route this plugin should actually guard.
   await app.register(fastifyCsrf, { cookieOpts: { signed: false } });
 
   await app.register(fastifyStatic, {
@@ -62,6 +67,40 @@ export async function buildServer() {
 
   registerHealthzRoute(app);
 
+  // v1 task 8 (Okta auth), api-contract.md Option A. AuthzClient talks to
+  // epic-lore-authz's UNMODIFIED UrcAuthApi (StartAuthSession/GetAuthSession/
+  // ExchangeUserTokenForMultiresourceToken) -- built unconditionally, not
+  // gated on LORE_BACKEND, so a real login can be exercised in fixture mode
+  // too (see ./config.ts's authzServerAddr doc comment).
+  const authz = createAuthzClient(config.authzServerAddr);
+  registerAuthRoutes(app, authz, config.sessionSecret, config.cookieSecure);
+
+  // Auth gate + per-request auth context, both in one hook: every request
+  // gets `request.auth` (../auth/request-context.ts) built from whatever
+  // session cookie it presents (possibly none). In `grpc` mode, `/api/*`
+  // additionally requires a real session -- lore-server rejects every
+  // repository-scoped RPC without one anyway (confirmed live, see
+  // apps/bff/src/backend/grpc.ts's repositoryHeaders doc comment), so this
+  // is a clean, honest 401 instead of letting an unauthenticated call reach
+  // the backend and fail with a raw gRPC error. `fixture` mode has no auth
+  // concept at all (a deliberate v1 scope decision -- fixture mode exists so
+  // the whole app runs with zero external dependencies, including
+  // epic-lore-authz) and stays fully open regardless of session state.
+  // `/api/auth/*` is exempt either way -- the status endpoint IS how an
+  // unauthenticated browser finds out it's unauthenticated.
+  app.addHook("onRequest", async (request, reply) => {
+    const session = readSessionCookie(request, config.sessionSecret);
+    if (
+      config.loreBackend === "grpc" &&
+      !session &&
+      request.url.startsWith("/api/") &&
+      !request.url.startsWith("/api/auth/")
+    ) {
+      return reply.code(401).send({ error: "unauthenticated" });
+    }
+    request.auth = buildAuthContext(authz, session);
+  });
+
   // LORE_BACKEND selects the data source for v1 task 1 (repo browse + file
   // tree); default "fixture" so the app runs with no lore-server reachable
   // at all. See ./config.ts for the full env var contract.
@@ -77,12 +116,6 @@ export async function buildServer() {
   registerDiffRoutes(app, backend);
   registerApiRoutes(app);
 
-  // TODO(task 8): OIDC/PKCE login + callback routes against Okta, per
-  // docs/design/stack-decision.md "Auth (v1 shape)". Blocked upstream on
-  // epic-lore-authz Phase 1b (see stack-decision.md, "Upstream
-  // dependencies" item 1) -- do not implement against a fake token
-  // exchange; leave unbuilt until the real endpoint exists.
-
   // TODO(task 9): /api/admin/* proxy routes, gated per-route by
   // CheckUserPermission, ADMIN_API_TOKEN read from env only, 404 when
   // unset (fail-closed). See stack-decision.md, "Admin proxy (task 9)".
@@ -91,12 +124,11 @@ export async function buildServer() {
   // subscriptions onto one channel per session. See stack-decision.md,
   // "Streaming (task 10)".
 
-  return app;
+  return { app, config };
 }
 
 async function main() {
-  const app = await buildServer();
-  const config = loadConfig();
+  const { app, config } = await buildServer();
   await app.listen({ port: config.port, host: config.host });
 }
 

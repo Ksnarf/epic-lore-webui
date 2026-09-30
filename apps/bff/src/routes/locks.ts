@@ -55,17 +55,21 @@ export function registerLockRoutes(app: FastifyInstance, backend: LoreBackend): 
       const repositoryId = parseHexId(request.params.repositoryId, "repositoryId");
       const branchId = request.query.branchId ? parseHexId(request.query.branchId, "branchId") : undefined;
 
-      const repository = await backend.getRepository(repositoryId);
+      const repository = await backend.getRepository(repositoryId, request.auth?.sessionToken);
       if (!repository) {
         throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
       }
 
-      const locks = await backend.queryLocks({
-        repositoryId,
-        branchId,
-        owner: request.query.owner,
-        description: request.query.description,
-      });
+      const authToken = await request.auth?.repositoryToken(repositoryId);
+      const locks = await backend.queryLocks(
+        {
+          repositoryId,
+          branchId,
+          owner: request.query.owner,
+          description: request.query.description,
+        },
+        authToken,
+      );
       const body: LockListResponseBody = { locks: locks.map(toLockDto) };
       return body;
     } catch (err) {
@@ -81,12 +85,13 @@ export function registerLockRoutes(app: FastifyInstance, backend: LoreBackend): 
       const repositoryId = parseHexId(request.params.repositoryId, "repositoryId");
       const resource = parseResourceBody(request.body);
 
-      const repository = await backend.getRepository(repositoryId);
+      const repository = await backend.getRepository(repositoryId, request.auth?.sessionToken);
       if (!repository) {
         throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
       }
 
-      const locks = await backend.acquireLock({ repositoryId, resource });
+      const authToken = await request.auth?.repositoryToken(repositoryId);
+      const locks = await backend.acquireLock({ repositoryId, resource }, authToken);
       const body: LockAcquireResponseBody = { locks: locks.map(toLockDto) };
       return reply.code(201).send(body);
     } catch (err) {
@@ -102,12 +107,13 @@ export function registerLockRoutes(app: FastifyInstance, backend: LoreBackend): 
       const repositoryId = parseHexId(request.params.repositoryId, "repositoryId");
       const resource = parseResourceBody(request.body);
 
-      const repository = await backend.getRepository(repositoryId);
+      const repository = await backend.getRepository(repositoryId, request.auth?.sessionToken);
       if (!repository) {
         throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
       }
 
-      const resources = await backend.releaseLock({ repositoryId, resource });
+      const authToken = await request.auth?.repositoryToken(repositoryId);
+      const resources = await backend.releaseLock({ repositoryId, resource }, authToken);
       const body: LockReleaseResponseBody = { resources: resources.map(toLockResourceDto) };
       return body;
     } catch (err) {

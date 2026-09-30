@@ -1,4 +1,5 @@
 import type {
+  AuthStatusResponseBody,
   BranchListResponseBody,
   ContentDiffResponseBody,
   LockAcquireRequestBody,
@@ -47,12 +48,41 @@ async function sendJson<T>(path: string, method: "POST" | "DELETE", body: unknow
   return readJsonOrThrow<T>(path, response);
 }
 
+/**
+ * v1 task 8 (Okta auth). A `401` from any `/api/*` route means the BFF's own
+ * session cookie is missing/expired -- the `grpc`-backend-only auth gate in
+ * apps/bff/src/server.ts. Redirecting straight to `/sign-in` here (instead
+ * of just throwing an `ApiError`) is what satisfies "401 -> redirect to
+ * login" without every single call site needing its own 401 handling; the
+ * one legitimate case that must NOT redirect -- `GET /api/auth/status`
+ * itself, which always answers `200` with `{authenticated: false}`, never
+ * `401` -- calls `fetch` directly (`fetchAuthStatus` below), not through
+ * this helper.
+ */
 async function readJsonOrThrow<T>(path: string, response: Response): Promise<T> {
+  if (response.status === 401) {
+    const next = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.assign(`/sign-in?next=${next}`);
+    // The navigation above is async; throw so callers' `.then`/`await`
+    // chains don't proceed as if they had real data while it happens.
+    throw new ApiError(401, "unauthenticated -- redirecting to sign-in");
+  }
   if (!response.ok) {
     const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
     throw new ApiError(response.status, body?.error ?? `${path}: ${response.status} ${response.statusText}`);
   }
   return (await response.json()) as T;
+}
+
+/**
+ * v1 task 8. Never redirects on `401` (see `readJsonOrThrow`'s doc comment)
+ * -- this IS the endpoint the sign-in screen (../routes/sign-in.tsx) polls
+ * to find out whether it's authenticated yet, so it always resolves with a
+ * body, including `{authenticated: false}`.
+ */
+export async function fetchAuthStatus(): Promise<AuthStatusResponseBody> {
+  const response = await fetch("/api/auth/status", { headers: { accept: "application/json" } });
+  return (await response.json()) as AuthStatusResponseBody;
 }
 
 export function fetchRepositories(): Promise<RepositoryListResponseBody> {

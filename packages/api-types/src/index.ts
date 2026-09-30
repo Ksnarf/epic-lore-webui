@@ -6,3 +6,4 @@ export * from "./tree.js";
 export * from "./revision.js";
 export * from "./lock.js";
 export * from "./diff.js";
+export * from "./auth.js";

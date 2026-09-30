@@ -31,16 +31,20 @@ export function registerRevisionRoutes(app: FastifyInstance, backend: LoreBacken
       const branchId = parseHexId(request.params.branchId, "branchId");
       const cursor = request.query.cursor ? parseHexId(request.query.cursor, "cursor") : undefined;
 
-      const repository = await backend.getRepository(repositoryId);
+      const repository = await backend.getRepository(repositoryId, request.auth?.sessionToken);
       if (!repository) {
         throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
       }
 
-      const { items, signatureForward, signatureBackward } = await backend.listRevisions({
-        repositoryId,
-        branchId,
-        cursor,
-      });
+      const authToken = await request.auth?.repositoryToken(repositoryId);
+      const { items, signatureForward, signatureBackward } = await backend.listRevisions(
+        {
+          repositoryId,
+          branchId,
+          cursor,
+        },
+        authToken,
+      );
       const body: RevisionListResponseBody = {
         items: items.map(toRevisionItemDto),
         signatureForward: signatureForward ? encodeHexBytes(signatureForward) : null,
@@ -60,12 +64,13 @@ export function registerRevisionRoutes(app: FastifyInstance, backend: LoreBacken
       const branchId = parseHexId(request.params.branchId, "branchId");
       const number = parseRevisionNumber(request.params.number);
 
-      const repository = await backend.getRepository(repositoryId);
+      const repository = await backend.getRepository(repositoryId, request.auth?.sessionToken);
       if (!repository) {
         throw new NotFoundError(`repository not found: ${request.params.repositoryId}`);
       }
 
-      const revision = await backend.getRevisionInfo({ repositoryId, branchId, number });
+      const authToken = await request.auth?.repositoryToken(repositoryId);
+      const revision = await backend.getRevisionInfo({ repositoryId, branchId, number }, authToken);
       if (!revision) {
         throw new NotFoundError(`revision not found: branch ${request.params.branchId} number ${request.params.number}`);
       }

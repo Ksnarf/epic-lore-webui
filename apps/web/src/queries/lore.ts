@@ -9,6 +9,23 @@ import * as api from "../api/lore-client.js";
  * query key rather than a bespoke fetch-and-merge.
  */
 
+/**
+ * v1 task 8 (Okta auth). Backs the shell's signed-in indicator
+ * (../components/page-shell.tsx) -- a light poll (`refetchInterval`) rather
+ * than a one-shot fetch so the indicator notices a session that expired (or
+ * was ended in another tab) without a manual page reload. Deliberately
+ * lower-frequency than the sign-in screen's own poll (../routes/sign-in.tsx,
+ * every 2s while actively waiting on a login) since this is a background
+ * "still signed in?" check, not a time-boxed wait.
+ */
+export function useAuthStatusQuery() {
+  return useQuery({
+    queryKey: ["auth-status"],
+    queryFn: api.fetchAuthStatus,
+    refetchInterval: 30_000,
+  });
+}
+
 export function useRepositoriesQuery() {
   return useQuery({ queryKey: ["repositories"], queryFn: api.fetchRepositories });
 }
