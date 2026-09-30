@@ -18,6 +18,12 @@ export function RepositoryBranchesRoute() {
       backTo="/"
       backLabel="All repositories"
     >
+      <Link
+        to={`/repositories/${repositoryId}/locks`}
+        className="mb-4 inline-block text-sm text-slate-400 hover:text-slate-200"
+      >
+        View locks &rarr;
+      </Link>
       {branchesQuery.isLoading && <p className="text-sm text-slate-400">Loading branches...</p>}
       {branchesQuery.error && (
         <p className="text-sm text-red-400">

@@ -1,5 +1,10 @@
 import type {
   BranchListResponseBody,
+  LockAcquireRequestBody,
+  LockAcquireResponseBody,
+  LockListResponseBody,
+  LockReleaseRequestBody,
+  LockReleaseResponseBody,
   RepositoryGetResponseBody,
   RepositoryListResponseBody,
   RevisionInfoResponseBody,
@@ -27,6 +32,20 @@ class ApiError extends Error {
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(path, { headers: { accept: "application/json" } });
+  return readJsonOrThrow<T>(path, response);
+}
+
+/** Shared by `acquireLock`/`releaseLock` (v1 task 5) -- both send a JSON body and expect a JSON response, differing only in HTTP method. */
+async function sendJson<T>(path: string, method: "POST" | "DELETE", body: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return readJsonOrThrow<T>(path, response);
+}
+
+async function readJsonOrThrow<T>(path: string, response: Response): Promise<T> {
   if (!response.ok) {
     const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
     throw new ApiError(response.status, body?.error ?? `${path}: ${response.status} ${response.statusText}`);
@@ -99,4 +118,28 @@ export function fetchRevisionInfo(
   return getJson(
     `/api/repositories/${encodeURIComponent(repositoryId)}/branches/${encodeURIComponent(branchId)}/revisions/${encodeURIComponent(number)}`,
   );
+}
+
+/**
+ * v1 task 5 (lock management across all branches). Omitting `branchId`
+ * queries every branch of the repository -- see `LockListResponseBody`'s
+ * doc comment.
+ */
+export function fetchLocks(repositoryId: string, branchId?: string): Promise<LockListResponseBody> {
+  const params = new URLSearchParams();
+  if (branchId) {
+    params.set("branchId", branchId);
+  }
+  const query = params.toString();
+  return getJson(`/api/repositories/${encodeURIComponent(repositoryId)}/locks${query ? `?${query}` : ""}`);
+}
+
+/** `urc.lock.LockService.Lock` via the BFF -- errors (rejects) if the resource is already locked. */
+export function acquireLock(repositoryId: string, body: LockAcquireRequestBody): Promise<LockAcquireResponseBody> {
+  return sendJson(`/api/repositories/${encodeURIComponent(repositoryId)}/locks`, "POST", body);
+}
+
+/** `urc.lock.LockService.Unlock` via the BFF -- no-ops if no lock exists for the resource. */
+export function releaseLock(repositoryId: string, body: LockReleaseRequestBody): Promise<LockReleaseResponseBody> {
+  return sendJson(`/api/repositories/${encodeURIComponent(repositoryId)}/locks`, "DELETE", body);
 }

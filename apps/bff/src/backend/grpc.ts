@@ -11,10 +11,21 @@ import {
   ThinClientService,
 } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
 import type { Revision } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
+import {
+  LockRequestSchema,
+  LockService,
+  QueryRequestSchema,
+  ResourceSchema,
+  UnlockRequestSchema,
+  type Lock,
+  type Resource,
+} from "@epic-lore-webui/lore-client/gen/lock_pb";
 import { filterBranchesForRepository } from "./branch-scope.js";
 import { NotFoundError } from "./errors.js";
 import type {
+  LockMutationParams,
   LoreBackend,
+  QueryLocksParams,
   RevisionInfoParams,
   RevisionListParams,
   RevisionListResult,
@@ -68,6 +79,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
   const repositoryClient = createClient(RepositoryService, transport);
   const revisionClient = createClient(RevisionService, transport);
   const thinClient = createClient(ThinClientService, transport);
+  const lockClient = createClient(LockService, transport);
 
   return {
     async listRepositories(): Promise<Repository[]> {
@@ -180,6 +192,85 @@ export function createGrpcBackend(addr: string): LoreBackend {
       } catch (err) {
         if (isNotFound(err)) {
           return null;
+        }
+        throw err;
+      }
+    },
+
+    /**
+     * v1 task 5. **Confirmed live** (docker-compose demo stack, 2026-09-30,
+     * `grpcurl` against this repo's own vendored `lock.proto`): `LockService`
+     * needs the same `repositoryHeaders()` metadata as `RevisionService`/
+     * `ThinClientService` -- `Query` returned `PermissionDenied: Unauthorized`
+     * with a valid bearer token but no such metadata, and succeeded (and
+     * correctly scoped its results to the named repository) once attached.
+     * `urc.lock.Resource` carries no repository id field at all, so this is
+     * the only wire-level scoping mechanism, exactly as task 1 found for the
+     * other services.
+     */
+    async queryLocks(params: QueryLocksParams): Promise<Lock[]> {
+      const request = create(QueryRequestSchema, {
+        branch: params.branchId,
+        owner: params.owner,
+        description: params.description,
+      });
+      const response = await lockClient.query(request, { headers: repositoryHeaders(params.repositoryId) });
+      return response.result;
+    },
+
+    /**
+     * **Real-server finding, contradicting `lock.proto`'s own doc comment**
+     * ("errors if already locked"): confirmed live that calling `Lock` again
+     * on an already-locked resource does **not** error -- it returns a
+     * successful response with an empty `locks` array. Returned as-is
+     * (whatever `locks` the server actually gives back, including empty) --
+     * not translated into a thrown error here, since that would be inventing
+     * behavior the real server doesn't have. The fixture backend's
+     * `ConflictError`-on-relock behavior is therefore a deliberate fixture
+     * simplification of what the proto *says*, not a proven real-server
+     * behavior -- see tasks.md task 5.
+     */
+    async acquireLock(params: LockMutationParams): Promise<Lock[]> {
+      const request = create(LockRequestSchema, {
+        resources: [
+          create(ResourceSchema, {
+            branch: params.resource.branchId,
+            hash: params.resource.hash,
+            description: params.resource.description,
+          }),
+        ],
+      });
+      const response = await lockClient.lock(request, { headers: repositoryHeaders(params.repositoryId) });
+      return response.locks;
+    },
+
+    /**
+     * **Real-server finding, contradicting `lock.proto`'s own doc comment**
+     * ("no-ops if no lock exists"): confirmed live that `Unlock` on a
+     * resource with no existing lock returns a real `NotFound: lock does not
+     * exist` error, not an empty-`resources` success. Caught here (the same
+     * `isNotFound` helper this file already uses for `getRepository`/
+     * `getRevisionInfo`) and translated to `[]` so this backend still honors
+     * `LoreBackend.releaseLock`'s documented no-op contract -- consistent
+     * with the fixture backend and with what the proto claims, even though
+     * the real wire behavior differs.
+     */
+    async releaseLock(params: LockMutationParams): Promise<Resource[]> {
+      const request = create(UnlockRequestSchema, {
+        resources: [
+          create(ResourceSchema, {
+            branch: params.resource.branchId,
+            hash: params.resource.hash,
+            description: params.resource.description,
+          }),
+        ],
+      });
+      try {
+        const response = await lockClient.unlock(request, { headers: repositoryHeaders(params.repositoryId) });
+        return response.resources;
+      } catch (err) {
+        if (isNotFound(err)) {
+          return [];
         }
         throw err;
       }

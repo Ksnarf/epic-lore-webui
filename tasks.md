@@ -520,8 +520,143 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       fetches bytes directly from `lore-server`; no bearer token is ever
       held by the browser. Provisioning that `lore` service account is a
       named v1 dependency (see stack-decision.md, "Upstream dependencies").
-- [ ] 5. Lock management across all branches, via `urc.lock` -- exceeds
-      GitLab's lock support (Premium-tier-only per the competitor analysis)
+- [x] [verified-e2e] 5. Lock management across all branches, via `urc.lock`.
+      Implemented: BFF routes `GET /api/repositories/:repositoryId/locks?
+      branchId=&owner=&description=` (list, omitting `branchId` spans every
+      branch -- the task's "across all branches"), `POST
+      /api/repositories/:repositoryId/locks` (acquire, `LockService.Lock`),
+      `DELETE /api/repositories/:repositoryId/locks` (release,
+      `LockService.Unlock`) -- `apps/bff/src/routes/locks.ts`. `LoreBackend`
+      (apps/bff/src/backend/types.ts) extended with `queryLocks`/
+      `acquireLock`/`releaseLock`, implemented in both `backend/fixture.ts`
+      (a genuinely mutable in-memory lock store -- the first fixture
+      collection in this repo that acquire/release actually mutate, not
+      static seed data) and `backend/grpc.ts` (real `LockService` client,
+      `repositoryHeaders()` metadata reused from task 1). New
+      `packages/api-types/src/lock.ts`: `LockResourceDto`/`LockDto`/
+      `LockListResponseBody`/`LockAcquireRequestBody`/
+      `LockAcquireResponseBody`/`LockReleaseRequestBody`/
+      `LockReleaseResponseBody`. Web side: `useLocksQuery`/
+      `useAcquireLockMutation`/`useReleaseLockMutation` (TanStack Query,
+      apps/web/src/queries/lore.ts), a pure grouping/sorting module
+      (`apps/web/src/locks/group-locks.ts`, one group per branch sorted by
+      branch name, each group's locks sorted newest-locked-first) with 5
+      passing vitest unit tests (group-by-branch, within-group sort,
+      lockedAt-tie-break, unknown-branch fallback, empty-list), and a new
+      deep-linkable route `/repositories/:repositoryId/locks`
+      (`apps/web/src/routes/repository-locks.tsx`) with an acquire form
+      (branch select + description + hex hash input, client-side hex
+      validation via `isHexBytes` before the request) and a release button
+      per lock row, linked from the branch list page. Deliberately out of
+      scope, per this task's brief: `LockService.Status` (redundant with
+      `Query` for this UI) and `AdminLock` (locking on another user's
+      behalf) -- the API contract study flagged `AdminLock`'s authorization
+      gating as an open question this study didn't resolve, and task 8
+      (auth) hasn't landed to make that gating meaningful yet. No diffs, no
+      auth, no notifications here -- those are other v1 tasks.
+
+      **Three real findings made building this, none anticipated by
+      docs/design/api-contract.md:**
+
+      1. **`urc.lock.Resource` carries no repository id at all** (verified
+         against `proto/vendor/lore/lock.proto`) -- confirmed live
+         (docker-compose demo stack, 2026-09-30, `grpcurl` against this
+         repo's own vendored `lock.proto`) that `LockService` needs the
+         exact same `repositoryHeaders()` gRPC metadata
+         (`urc-repository-id-bin`/`lore-partition-bin`) task 1 found for
+         `RevisionService`/`ThinClientService`: `Query` returned
+         `PermissionDenied: Unauthorized` with a valid bearer token but no
+         such metadata, and succeeded (correctly scoped to the named
+         repository) once attached. `grpc.ts` attaches it to all three lock
+         RPCs.
+      2. **The real server's `Lock` does NOT error on an already-locked
+         resource**, contradicting `lock.proto`'s own doc comment ("errors
+         if already locked"): confirmed live that re-locking an
+         already-locked resource returns a successful response with an
+         empty `locks` array, not an error. `grpc.ts`'s `acquireLock`
+         returns whatever the server gives back as-is (including empty) --
+         not translated into a thrown error, since that would invent
+         behavior the real server doesn't have. The fixture backend's
+         `ConflictError`-on-relock (409) is therefore a deliberate fixture
+         simplification of what the proto *claims*, not a proven
+         real-server behavior.
+      3. **The real server's `Unlock` DOES error on a resource with no
+         existing lock**, also contradicting `lock.proto`'s own doc comment
+         ("no-ops if no lock exists"): confirmed live it returns a real
+         `NotFound: lock does not exist` error. `grpc.ts`'s `releaseLock`
+         catches this (the same `isNotFound` helper this file already uses
+         for `getRepository`/`getRevisionInfo`) and returns `[]`, so this
+         backend still honors `LoreBackend.releaseLock`'s documented no-op
+         contract despite the real wire behavior differing from the proto's
+         doc comment.
+      4. **A `Resource.hash` shorter than 32 bytes is silently zeroed by the
+         real server, not rejected or preserved** -- locking a resource with
+         a 20-byte arbitrary hash returned (and `Query` later echoed) an
+         all-zero 32-byte hash instead; a real 32-byte (sha256-length) hash
+         was preserved verbatim. Undocumented in `lock.proto`. The web UI's
+         acquire form does not currently resolve a file's real CAS hash from
+         the tree automatically (task 3/4's tree-address plumbing is a
+         separate concern) -- a user must supply a real 32-byte hex hash by
+         hand (e.g. copied from a `tree` route's `address.hash`) for the
+         lock to mean anything; a shorter or malformed value silently
+         succeeds against the real server but locks the wrong (zeroed)
+         resource identity. Flagged here rather than silently worked around.
+
+      Evidence (real commands, run 2026-09-30):
+      - `pnpm -r run typecheck`/`lint`/`build`: all exit 0 across all 4
+        workspaces.
+      - `pnpm --filter @epic-lore-webui/web run test`: 8/8 pass (5 new
+        `group-locks.test.ts` + the 3 pre-existing `lane-assignment.test.ts`).
+      - Fixture mode (`PORT=3201 LORE_BACKEND=fixture`): curled every route.
+        `GET .../locks` (no filter) showed the pre-seeded `release/1.0` lock
+        (cross-branch listing with zero UI interaction); `POST .../locks`
+        acquiring a new resource on `main` returned `201 Created`;
+        `GET .../locks?branchId=<main>` showed only that branch's lock;
+        re-`POST`ing the identical resource returned `409 Conflict`
+        (`"resource already locked"`); `DELETE .../locks` released it,
+        confirmed gone from a follow-up `GET`; releasing again returned
+        `200` with `{"resources":[]}` (no-op, per the fixture's documented
+        contract); invalid hex (`"not-hex!"`) returned `400`; an unknown
+        repository id returned `404`; repo 2's locks stayed empty throughout
+        (no cross-repository leakage). Process killed and confirmed dead
+        (`ps` empty, follow-up curl connection-refused).
+      - **Real-server validation** against the same live demo stack tasks
+        1/2 validated (`epic-lore-authz`'s `demo/`, docker-compose, already
+        running; no source file in that repo modified -- only its documented
+        admin/login flows and a real `BranchCreate` call were used to seed a
+        second branch, exactly mirroring how task 1/2 seeded a second
+        repository). Proved live via `grpcurl` against this repo's own
+        vendored `lock.proto` (copied into the demo's `tools` container with
+        `docker cp`, not edited): `Query` without repository metadata ->
+        `PermissionDenied`; with metadata -> succeeds; `Lock` on a fresh
+        branch + a second, newly-created branch, then `Query` with no
+        `branch` filter returned **both** locks spanning **both** real
+        branches -- direct proof of "across all branches"; `Query` filtered
+        to one branch returned only that branch's lock; `Unlock` released
+        both, second `Unlock` returned real `NotFound`.
+      - **Then re-ran the fixed code through the actual BFF HTTP routes**
+        (not just `grpcurl`), using a temporary, git-reverted
+        transport-level bearer-token interceptor (`LOCKTEST_BEARER_TOKEN`,
+        stands in for task 8's unbuilt token sourcing -- confirmed removed
+        by `grep` across source and a clean rebuild before finishing, same
+        precedent as task 1's validation): `GET /api/repositories/<demo-repo>
+        /locks` returned both real locks with correct hex ids and decimal-
+        string ms timestamps, spanning the two real branches; `POST
+        .../locks` with a real 32-byte hex hash returned `201` and the lock
+        was visible in a follow-up `GET`; `DELETE .../locks` released it
+        (`200`); releasing again returned `200` with `{"resources":[]}` --
+        proving the `NotFound`-to-no-op fix (finding 3 above) works through
+        the real HTTP route, not just at the gRPC layer. A final boot with
+        **no** bearer token at all returned a real, unswallowed
+        `[unauthenticated] authorization header required` (`500`) --
+        honestly surfaced, matching this task's brief on write-path error
+        handling without task 8's auth. All live test locks were released
+        and the temporary branch left in place (harmless, matches task 1/2's
+        precedent of leaving seeded demo data); the interceptor was reverted
+        (`grep -rn LOCKTEST apps/ packages/` clean after a full rebuild) and
+        every BFF process started during validation was killed and confirmed
+        dead (`ps` empty after each). The `epic-lore-authz` demo stack itself
+        was left running, untouched.
 - [ ] 6. Change-request review flow with inline comments, built on
       existing revision metadata fields (`reviewed-by`, `merged-by`,
       `change-request`). API contract study

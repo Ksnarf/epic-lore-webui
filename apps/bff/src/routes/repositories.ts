@@ -6,7 +6,7 @@ import type {
   RevisionTreeResponseBody,
 } from "@epic-lore-webui/api-types";
 import type { FastifyInstance } from "fastify";
-import { BadRequestError, NotFoundError } from "../backend/errors.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../backend/errors.js";
 import type { LoreBackend } from "../backend/types.js";
 import { toBranchSummary, toRepositorySummary, toTreeNodeDto } from "../dto/lore.js";
 
@@ -124,6 +124,9 @@ export function handleRouteError(err: unknown, reply: import("fastify").FastifyR
   }
   if (err instanceof NotFoundError) {
     return reply.code(404).send({ error: err.message });
+  }
+  if (err instanceof ConflictError) {
+    return reply.code(409).send({ error: err.message });
   }
   throw err;
 }

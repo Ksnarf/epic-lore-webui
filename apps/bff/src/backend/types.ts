@@ -1,6 +1,7 @@
 import type { Branch, RevisionItem, Repository } from "@epic-lore-webui/lore-client/gen/lore/model/v1/model_pb";
 import type { RevisionTreeHeader } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
 import type { Revision, TreeNode } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
+import type { Lock, Resource } from "@epic-lore-webui/lore-client/gen/lock_pb";
 
 export interface RevisionTreeParams {
   /**
@@ -67,6 +68,38 @@ export interface RevisionInfoParams {
 }
 
 /**
+ * v1 task 5 (lock management across all branches, `urc.lock`). Identifies
+ * the resource a lock is about -- see `LockResourceDto` in
+ * packages/api-types/src/lock.ts for why `Resource` (`urc.lock.Resource`)
+ * carries no repository id.
+ */
+export interface LockResourceParams {
+  branchId: Uint8Array;
+  hash: Uint8Array;
+  description: string;
+}
+
+/**
+ * `urc.lock.QueryRequest`'s three fields, all optional -- omitting
+ * `branchId` is what makes a query span every branch of the repository
+ * ("across all branches", this task's title).
+ */
+export interface QueryLocksParams {
+  /** See `RevisionTreeParams.repositoryId`'s doc comment -- same gRPC-metadata-scoping pattern, applied here to `LockService` (see grpc.ts for this RPC's own live-verification status). */
+  repositoryId: Uint8Array;
+  branchId?: Uint8Array | undefined;
+  owner?: string | undefined;
+  description?: string | undefined;
+}
+
+/** Shared params for `acquireLock`/`releaseLock` -- both act on exactly one resource (see `LockAcquireRequestBody`'s doc comment on why this repo doesn't expose `urc.lock`'s batch-resource shape). */
+export interface LockMutationParams {
+  /** See `RevisionTreeParams.repositoryId`'s doc comment. */
+  repositoryId: Uint8Array;
+  resource: LockResourceParams;
+}
+
+/**
  * Internal data-source interface for v1 task 1 (repo browse + file tree).
  * `fixture.ts` and `grpc.ts` both implement this; route handlers
  * (../routes/repositories.ts) are written against this interface only and
@@ -89,4 +122,15 @@ export interface LoreBackend {
   listRevisions(params: RevisionListParams): Promise<RevisionListResult>;
   /** The full record (including ancestry) for one revision. `null` if not found. */
   getRevisionInfo(params: RevisionInfoParams): Promise<Revision | null>;
+
+  /**
+   * v1 task 5: locks matching the (optional) branch/owner/description
+   * filters, scoped to one repository. Omitting `branchId` spans every
+   * branch of the repository -- see `QueryLocksParams`'s doc comment.
+   */
+  queryLocks(params: QueryLocksParams): Promise<Lock[]>;
+  /** `urc.lock.LockService.Lock` -- errors (throws) if the resource is already locked, per the proto's own doc comment. */
+  acquireLock(params: LockMutationParams): Promise<Lock[]>;
+  /** `urc.lock.LockService.Unlock` -- no-ops (returns an empty array) if no lock exists for the resource. */
+  releaseLock(params: LockMutationParams): Promise<Resource[]>;
 }

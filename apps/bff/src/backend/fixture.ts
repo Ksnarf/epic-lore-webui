@@ -1,4 +1,6 @@
 import { create } from "@bufbuild/protobuf";
+import { timestampFromMs } from "@bufbuild/protobuf/wkt";
+import { LockSchema, ResourceSchema, type Lock, type Resource } from "@epic-lore-webui/lore-client/gen/lock_pb";
 import {
   AddressSchema,
   BranchPointSchema,
@@ -21,10 +23,12 @@ import {
 } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
 import { RevisionTreeHeaderSchema } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
 import { bytesEqual, filterBranchesForRepository } from "./branch-scope.js";
-import { NotFoundError } from "./errors.js";
+import { ConflictError, NotFoundError } from "./errors.js";
 import { queryFixtureTree } from "./tree-query.js";
 import type {
+  LockMutationParams,
   LoreBackend,
+  QueryLocksParams,
   RevisionInfoParams,
   RevisionListParams,
   RevisionListResult,
@@ -381,6 +385,36 @@ function hexKey(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("hex");
 }
 
+// --- v1 task 5 fixture lock store ------------------------------------------
+//
+// `urc.lock.Resource` carries no repository id (see packages/api-types/src/
+// lock.ts's top comment) -- a lock is identified only by its (branch, hash)
+// pair. This in-memory store is mutable (acquire/release actually add/remove
+// entries), unlike every other fixture collection above, which is static
+// seed data -- locks are the first v1 feature this fixture backend lets a
+// caller genuinely mutate.
+
+/** Same (branch, hash) identity `urc.lock` itself uses to mean "the same lock" -- not a repository- or description-qualified key. */
+function resourceKey(resource: Resource): string {
+  return `${hexKey(resource.branch)}:${hexKey(resource.hash)}`;
+}
+
+/** Fixture stand-in for "the server stores the caller's own id from auth info" (`urc.lock.Lock.owner`'s own doc comment) -- no auth concept exists yet (task 8), so every fixture-acquired lock is attributed to this fixed name. */
+const FIXTURE_LOCK_OWNER = "fixture-user";
+
+/** One pre-seeded lock, so `GET .../locks` has something to show with zero UI interaction: `epic-lore`'s `release/1.0` branch holds a lock on a file description, as if someone were mid-edit preparing a release. */
+const locks: Lock[] = [
+  create(LockSchema, {
+    resource: create(ResourceSchema, {
+      branch: BRANCH_LORE_RELEASE_ID,
+      hash: fixtureHash(9001),
+      description: "crates/lore-server/src/main.rs",
+    }),
+    owner: "release-manager",
+    lockedAt: timestampFromMs(Number(FIXTURE_CREATED_MS) + 20 * 3_600_000),
+  }),
+];
+
 /**
  * Server picks page size (`RevisionListResponse`'s own doc comment) --
  * fixture-only choice, kept small so a curl demonstration of pagination
@@ -467,6 +501,71 @@ export function createFixtureBackend(): LoreBackend {
         return itemsDesc[0] ?? null;
       }
       return itemsDesc.find((revision) => revision.number === params.number) ?? null;
+    },
+
+    async queryLocks(params: QueryLocksParams): Promise<Lock[]> {
+      const repository = repositories.find((candidate) => bytesEqual(candidate.id, params.repositoryId));
+      if (!repository) {
+        throw new NotFoundError(`fixture: no repository for id ${hexKey(params.repositoryId)}`);
+      }
+      const repoBranchIds = new Set(
+        filterBranchesForRepository(branches, repository).map((branch) => hexKey(branch.id)),
+      );
+      return locks.filter((lock) => {
+        if (!lock.resource || !repoBranchIds.has(hexKey(lock.resource.branch))) {
+          return false;
+        }
+        if (params.branchId && !bytesEqual(lock.resource.branch, params.branchId)) {
+          return false;
+        }
+        if (params.owner !== undefined && lock.owner !== params.owner) {
+          return false;
+        }
+        if (params.description !== undefined && lock.resource.description !== params.description) {
+          return false;
+        }
+        return true;
+      });
+    },
+
+    async acquireLock(params: LockMutationParams): Promise<Lock[]> {
+      const branch = branches.find((candidate) => bytesEqual(candidate.id, params.resource.branchId));
+      if (!branch) {
+        throw new NotFoundError(`fixture: no branch for id ${hexKey(params.resource.branchId)}`);
+      }
+      const resource = create(ResourceSchema, {
+        branch: params.resource.branchId,
+        hash: params.resource.hash,
+        description: params.resource.description,
+      });
+      const key = resourceKey(resource);
+      if (locks.some((lock) => lock.resource && resourceKey(lock.resource) === key)) {
+        // Matches `urc.lock.LockService.Lock`'s own doc comment: "errors if already locked".
+        throw new ConflictError(`fixture: resource already locked: ${params.resource.description}`);
+      }
+      const lock = create(LockSchema, {
+        resource,
+        owner: FIXTURE_LOCK_OWNER,
+        lockedAt: timestampFromMs(Date.now()),
+      });
+      locks.push(lock);
+      return [lock];
+    },
+
+    async releaseLock(params: LockMutationParams): Promise<Resource[]> {
+      const resource = create(ResourceSchema, {
+        branch: params.resource.branchId,
+        hash: params.resource.hash,
+        description: params.resource.description,
+      });
+      const key = resourceKey(resource);
+      const index = locks.findIndex((lock) => lock.resource && resourceKey(lock.resource) === key);
+      if (index === -1) {
+        // Matches `urc.lock.LockService.Unlock`'s own doc comment: "no-ops if no lock exists".
+        return [];
+      }
+      const [removed] = locks.splice(index, 1);
+      return [removed!.resource!];
     },
   };
 }

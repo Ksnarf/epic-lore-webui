@@ -1,4 +1,5 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import type { LockAcquireRequestBody, LockReleaseRequestBody } from "@epic-lore-webui/api-types";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "../api/lore-client.js";
 
 /**
@@ -79,5 +80,47 @@ export function useRevisionTreeQuery(
     queryKey: ["revision-tree", repositoryId, branchId, path],
     queryFn: () => api.fetchRevisionTree(repositoryId, branchId, path, 1),
     enabled: repositoryId.length > 0 && branchId.length > 0 && (options?.enabled ?? true),
+  });
+}
+
+/**
+ * v1 task 5 (lock management across all branches): all locks in one
+ * repository, spanning every branch (omitting `branchId`, per
+ * `LockListResponseBody`'s doc comment).
+ */
+export function useLocksQuery(repositoryId: string) {
+  return useQuery({
+    queryKey: ["locks", repositoryId],
+    queryFn: () => api.fetchLocks(repositoryId),
+    enabled: repositoryId.length > 0,
+  });
+}
+
+/**
+ * Acquire (`urc.lock.LockService.Lock`) via the BFF. Invalidates the locks
+ * list on success so the new lock shows up without a manual refetch; on
+ * failure the error is left on the mutation result for the caller to
+ * render honestly (e.g. "already locked", or -- against a real,
+ * auth-enabled `lore-server` without task 8's auth built -- an
+ * unauthenticated/permission-denied error; neither is swallowed here).
+ */
+export function useAcquireLockMutation(repositoryId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: LockAcquireRequestBody) => api.acquireLock(repositoryId, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["locks", repositoryId] });
+    },
+  });
+}
+
+/** Release (`urc.lock.LockService.Unlock`) via the BFF. Same invalidation/error-surfacing approach as `useAcquireLockMutation`. */
+export function useReleaseLockMutation(repositoryId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: LockReleaseRequestBody) => api.releaseLock(repositoryId, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["locks", repositoryId] });
+    },
   });
 }

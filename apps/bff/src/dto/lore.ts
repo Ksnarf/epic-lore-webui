@@ -1,12 +1,16 @@
+import { timestampMs } from "@bufbuild/protobuf/wkt";
 import { encodeHexBytes } from "@epic-lore-webui/api-types";
 import type {
   BranchSummary,
+  LockDto,
+  LockResourceDto,
   RepositorySummary,
   RevisionDto,
   RevisionItemDto,
   RevisionParentDto,
   TreeNodeDto,
 } from "@epic-lore-webui/api-types";
+import type { Lock, Resource } from "@epic-lore-webui/lore-client/gen/lock_pb";
 import type { Branch, RevisionItem, Repository } from "@epic-lore-webui/lore-client/gen/lore/model/v1/model_pb";
 import {
   FileMode,
@@ -78,6 +82,30 @@ export function toRevisionDto(revision: Revision): RevisionDto {
     committedBy: revision.committedBy,
     parentSelf: revision.parentSelf ? toRevisionParentDto(revision.parentSelf) : null,
     parentOther: revision.parentOther ? toRevisionParentDto(revision.parentOther) : null,
+  };
+}
+
+/** Converts a gRPC `urc.lock.Resource` to the BFF's JSON contract (v1 task 5). */
+export function toLockResourceDto(resource: Resource): LockResourceDto {
+  return {
+    branchId: encodeHexBytes(resource.branch),
+    hash: encodeHexBytes(resource.hash),
+    description: resource.description,
+  };
+}
+
+/**
+ * Converts a gRPC `urc.lock.Lock` to the BFF's JSON contract (v1 task 5).
+ * `resource` is optional on the wire (`Lock.resource?: Resource | undefined`)
+ * but every real lock the server returns should carry one -- falls back to
+ * an empty resource rather than throwing, same defensive convention as
+ * `toRevisionParentDto`'s `branchId` fallback above.
+ */
+export function toLockDto(lock: Lock): LockDto {
+  return {
+    resource: lock.resource ? toLockResourceDto(lock.resource) : { branchId: encodeHexBytes(new Uint8Array(0)), hash: encodeHexBytes(new Uint8Array(0)), description: "" },
+    owner: lock.owner,
+    lockedAt: lock.lockedAt ? String(timestampMs(lock.lockedAt)) : "0",
   };
 }
 
