@@ -43,6 +43,42 @@ export interface AuthzClient {
    * exchange instead of one each.
    */
   exchangeForRepositoryToken(sessionUserToken: string, sessionUserId: string, repositoryId: Uint8Array): Promise<string>;
+  /**
+   * v1 task 9 (permissions view). `UrcAuthApi.LookupUserPermissions`,
+   * resolving the caller from `sessionUserToken` (the session's own AuthN
+   * token -- confirmed live this needs no per-repository AuthZ exchange,
+   * same as `RepositoryList`/`RepositoryGet`). `resourceFilter` empty
+   * matches every resource id the caller holds a grant on at all (direct,
+   * group, or wildcard) -- "list everything I can do" -- which is exactly
+   * what the self-service "my permissions" view needs. Paginates internally
+   * via `next_page_token`, capped at `MAX_LOOKUP_PAGES` so a pathological
+   * number of grants cannot turn one request into an unbounded loop
+   * (mirrors `epic-lore-authz`'s own `admin::LIST_LIMIT` "bounded, not
+   * silently partial" convention) -- logs a warning if the cap is hit
+   * rather than silently truncating.
+   */
+  lookupUserPermissions(sessionUserToken: string): Promise<ResourcePermissionSummary[]>;
+  /**
+   * v1 task 9. `UrcAuthApi.CheckUserPermission` for a specific set of
+   * resource ids, resolving the caller from `sessionUserToken` (no
+   * `target_user` -- this BFF has no legitimate way to obtain another
+   * user's own token, per api-contract.md section 4). Used by the
+   * admin-proxy gate (../routes/admin.ts) to check whether the caller holds
+   * `admin` on the `urc-*` wildcard resource -- this UI's own convention
+   * for "may administer other users' grants", since `epic-lore-authz` has
+   * no per-user admin role of its own (api-contract.md section 4, "the
+   * gap").
+   */
+  checkUserPermission(
+    sessionUserToken: string,
+    resourceIds: string[],
+  ): Promise<{ allowed: ResourcePermissionSummary[]; denied: ResourcePermissionSummary[] }>;
+}
+
+/** Plain-object mirror of `epic_urc.ResourcePermission` (`resource_id` + `permission[]`) -- what `../routes/permissions.ts`/`../routes/admin.ts` actually consume, independent of the generated proto type. */
+export interface ResourcePermissionSummary {
+  resourceId: string;
+  permission: string[];
 }
 
 interface CachedToken {
@@ -51,6 +87,10 @@ interface CachedToken {
 }
 
 const REFRESH_SKEW_MS = 15_000;
+
+/** See `lookupUserPermissions`'s doc comment. */
+const MAX_LOOKUP_PAGES = 50;
+const LOOKUP_PAGE_SIZE = 200;
 
 export function createAuthzClient(addr: string): AuthzClient {
   const transport = createLoreTransport({ baseUrl: `http://${addr}` });
@@ -88,6 +128,46 @@ export function createAuthzClient(addr: string): AuthzClient {
       }
       repoTokenCache.set(cacheKey, { token: token.userToken, expiresAtMs: Number(token.expiresAt) });
       return token.userToken;
+    },
+
+    async lookupUserPermissions(sessionUserToken: string) {
+      const headers = new Headers();
+      headers.set("authorization", `Bearer ${sessionUserToken}`);
+      const results: ResourcePermissionSummary[] = [];
+      let pageToken: string | undefined;
+      for (let page = 0; page < MAX_LOOKUP_PAGES; page++) {
+        const response = await client.lookupUserPermissions(
+          { resourceFilter: "", pageSize: LOOKUP_PAGE_SIZE, pageToken },
+          { headers },
+        );
+        for (const entry of response.resourcePermission) {
+          results.push({ resourceId: entry.resourceId, permission: entry.permission });
+        }
+        if (!response.nextPageToken) {
+          return results;
+        }
+        pageToken = response.nextPageToken;
+      }
+      console.warn(
+        `lookupUserPermissions: hit MAX_LOOKUP_PAGES (${MAX_LOOKUP_PAGES}) without exhausting next_page_token -- result is a bounded prefix, not the complete list`,
+      );
+      return results;
+    },
+
+    async checkUserPermission(sessionUserToken: string, resourceIds: string[]) {
+      const headers = new Headers();
+      headers.set("authorization", `Bearer ${sessionUserToken}`);
+      const response = await client.checkUserPermission({ resourceId: resourceIds }, { headers });
+      return {
+        allowed: response.allowedResourcePermission.map((entry) => ({
+          resourceId: entry.resourceId,
+          permission: entry.permission,
+        })),
+        denied: response.deniedResourcePermission.map((entry) => ({
+          resourceId: entry.resourceId,
+          permission: entry.permission,
+        })),
+      };
     },
   };
 }

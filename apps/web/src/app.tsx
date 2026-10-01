@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, RouterProvider } from "react-router";
+import { AdminPermissionsRoute } from "./routes/admin-permissions.js";
 import { BranchHistoryRoute } from "./routes/branch-history.js";
 import { BranchTreeRoute } from "./routes/branch-tree.js";
+import { PermissionsRoute } from "./routes/permissions.js";
 import { RepositoriesRoute } from "./routes/repositories.js";
 import { RepositoryBranchesRoute } from "./routes/repository-branches.js";
 import { RepositoryLocksRoute } from "./routes/repository-locks.js";
@@ -20,6 +22,8 @@ const queryClient = new QueryClient();
 const router = createBrowserRouter([
   { path: "/", element: <RepositoriesRoute /> },
   { path: "/sign-in", element: <SignInRoute /> },
+  { path: "/permissions", element: <PermissionsRoute /> },
+  { path: "/admin/permissions", element: <AdminPermissionsRoute /> },
   { path: "/repositories/:repositoryId", element: <RepositoryBranchesRoute /> },
   { path: "/repositories/:repositoryId/locks", element: <RepositoryLocksRoute /> },
   {

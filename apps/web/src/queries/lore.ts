@@ -172,3 +172,36 @@ export function useContentDiffQuery(
     enabled: repositoryId.length > 0 && (options?.enabled ?? true),
   });
 }
+
+/**
+ * v1 task 9 (permissions view), self-service: every resource the logged-in
+ * user holds a grant on (`LookupUserPermissions` via the BFF). Always
+ * reachable -- no `ADMIN_API_TOKEN` gate on this route.
+ */
+export function useMyPermissionsQuery() {
+  return useQuery({ queryKey: ["my-permissions"], queryFn: api.fetchMyPermissions });
+}
+
+/**
+ * v1 task 9, admin view. `retry: false` on both admin queries below: a 403
+ * (no admin grant) or 404 (admin proxy disabled) is a real, stable answer,
+ * not a transient failure TanStack Query's default retry-with-backoff
+ * should paper over before the page renders it.
+ */
+export function useAdminUsersQuery(options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ["admin-users"],
+    queryFn: api.fetchAdminUsers,
+    retry: false,
+    enabled: options?.enabled ?? true,
+  });
+}
+
+export function useAdminUserGrantsQuery(userId: string, options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ["admin-user-grants", userId],
+    queryFn: () => api.fetchAdminUserGrants(userId),
+    enabled: userId.length > 0 && (options?.enabled ?? true),
+    retry: false,
+  });
+}

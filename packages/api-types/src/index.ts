@@ -7,3 +7,4 @@ export * from "./revision.js";
 export * from "./lock.js";
 export * from "./diff.js";
 export * from "./auth.js";
+export * from "./permission.js";

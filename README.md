@@ -57,6 +57,19 @@ connector, a real `lore-server`) -- not just built and code-read. See
 - **Lock management across all branches**: list, acquire, and release
   advisory locks, with real per-user attribution (the lock owner recorded is
   the actual logged-in user, confirmed live, not a placeholder). (task 5)
+- **Permissions view**: a self-service "my permissions" page shows every
+  resource the logged-in user actually holds a grant on and at what level
+  (`epic-lore-authz`'s `LookupUserPermissions`) -- proven live returning the
+  real logged-in user's real seeded grants, friendly-labeled in the Artist
+  profile and raw in Developer. An admin view (viewing other users' grants)
+  is also built, behind a BFF-held `ADMIN_API_TOKEN` that is never shipped
+  to the browser and an `admin`-on-`urc-*` permission gate re-checked on
+  every request; it is absent entirely (`404`) unless that token is
+  configured. The gate's deny path and the admin HTTP-proxy's reachability
+  are both proven live; its allow path is proven only against fixture data
+  and a direct client call (the demo stack has no user holding that
+  wildcard grant to prove it denying-then-allowing without writing to that
+  stack's database). (task 9)
 
 ### Built, but only fixture-verified so far (pending real server content)
 
@@ -105,11 +118,6 @@ against a real stack:
   content) needs `StorageService` RPCs that are bidirectional-streaming and
   cannot be driven from any browser transport, including grpc-web. This is
   an architectural limitation of the current API, not an unproven detail.
-- **Permissions admin view** (viewing/managing other users' grants) is not
-  built. A user's own permissions are already fully queryable today; an
-  admin view of *other* users' grants needs the BFF to hold an admin
-  credential server-side, which is a scoping/security decision still
-  pending, not a missing server API.
 - **Live notifications** are not built. The underlying
   `lore.notification` streaming RPC exists and is straightforwardly
   proxyable by the BFF; this is unbuilt v1 scope, not a server blocker.
@@ -135,7 +143,7 @@ against a real stack:
 | 6 | CR review + inline comments | Not started | no server-side data model exists |
 | 7 | Branch mgmt + conflict UI | Not started | resolution unreachable from any browser transport |
 | 8 | Okta login (SP-initiated) | Done, verified live | IdP-initiated tile entry not built |
-| 9 | Permissions admin view | Not started | self-service "my permissions" already works |
+| 9 | Permissions view | Done, verified live | self-service proven live; admin view built, deny path + proxy reachability proven live, allow path fixture/direct-client only |
 | 10 | Live notifications | Not started | RPC exists, just not wired up yet |
 | 11 | Developer/Artist dual profile | Not started | no blocker |
 
@@ -179,6 +187,8 @@ defaults; never commit real values.
 | `PROFILE_GROUPS_ARTIST` | comma-separated group names that default a user to the Artist profile |
 | `PROFILE_GROUPS_DEVELOPER` | comma-separated group names that default a user to the Developer profile (wins if a user is in both lists) |
 | `FIXTURE_GROUPS` | comma-separated fake group names for the fixture auth path, so group-based default-profile resolution is testable with no real IdP |
+| `ADMIN_API_TOKEN` | `epic-lore-authz` admin-surface bearer secret; unset (default) disables `/api/admin/*` entirely |
+| `ADMIN_AUTHZ_HTTP_ADDR` | `host:port` of `epic-lore-authz`'s raw HTTP (admin) listener, only read when `ADMIN_API_TOKEN` is set |
 
 ## Dev quickstart
 

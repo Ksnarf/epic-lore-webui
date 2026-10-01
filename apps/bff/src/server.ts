@@ -4,17 +4,21 @@ import Fastify from "fastify";
 import fastifyCookie from "@fastify/cookie";
 import fastifyCsrf from "@fastify/csrf-protection";
 import fastifyStatic from "@fastify/static";
+import { createAuthzAdminClient, createFixtureAdminClient } from "./auth/admin-client.js";
 import { createAuthzClient } from "./auth/authz-client.js";
+import { createAuthzPermissionsClient, createFixturePermissionsClient } from "./auth/permissions-client.js";
 import { buildAuthContext } from "./auth/request-context.js";
 import { readSessionCookie } from "./auth/session.js";
 import { createFixtureBackend } from "./backend/fixture.js";
 import { createGrpcBackend } from "./backend/grpc.js";
 import { loadConfig } from "./config.js";
 import { registerHealthzRoute } from "./routes/healthz.js";
+import { registerAdminRoutes } from "./routes/admin.js";
 import { registerApiRoutes } from "./routes/api.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerDiffRoutes } from "./routes/diff.js";
 import { registerLockRoutes } from "./routes/locks.js";
+import { registerPermissionRoutes } from "./routes/permissions.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerRevisionRoutes } from "./routes/revisions.js";
 
@@ -122,9 +126,34 @@ export async function buildServer() {
   registerDiffRoutes(app, backend);
   registerApiRoutes(app);
 
-  // TODO(task 9): /api/admin/* proxy routes, gated per-route by
-  // CheckUserPermission, ADMIN_API_TOKEN read from env only, 404 when
-  // unset (fail-closed). See stack-decision.md, "Admin proxy (task 9)".
+  // v1 task 9 (permissions view). Self-service half (`GET
+  // /api/permissions/me`, ../routes/permissions.ts): always registered --
+  // `LookupUserPermissions` needs no `ADMIN_API_TOKEN` (api-contract.md
+  // section 4). Same grpc-vs-fixture selection as `backend` above, but this
+  // is deliberately NOT a `LoreBackend` method -- permissions come from
+  // `epic-lore-authz`, not `lore-server` (../auth/permissions-client.ts's
+  // doc comment).
+  const permissionsClient =
+    config.loreBackend === "grpc" ? createAuthzPermissionsClient(authz) : createFixturePermissionsClient();
+  registerPermissionRoutes(app, permissionsClient);
+
+  // v1 task 9, admin view (api-contract.md section 4 / stack-decision.md's
+  // "Admin proxy (task 9)"): registered ONLY when `ADMIN_API_TOKEN` is
+  // configured -- unset means `/api/admin/*` is never registered at all, a
+  // real 404, not a route that exists but denies (fail-closed by absence,
+  // not by a runtime flag). Every registered route additionally re-checks
+  // `permissionsClient.checkAdminGrant` on every request
+  // (../routes/admin.ts).
+  if (config.adminApiToken) {
+    const adminClient =
+      config.loreBackend === "grpc"
+        ? createAuthzAdminClient(config.adminAuthzHttpAddr, config.adminApiToken)
+        : createFixtureAdminClient();
+    registerAdminRoutes(app, adminClient, permissionsClient);
+    app.log.info({ adminAuthzHttpAddr: config.adminAuthzHttpAddr }, "admin-proxy routes enabled (ADMIN_API_TOKEN set)");
+  } else {
+    app.log.info("admin-proxy routes disabled (ADMIN_API_TOKEN not set) -- /api/admin/* does not exist");
+  }
 
   // TODO(task 10): SSE route multiplexing lore.notification.NotificationService
   // subscriptions onto one channel per session. See stack-decision.md,

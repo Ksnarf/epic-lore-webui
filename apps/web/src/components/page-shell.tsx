@@ -62,6 +62,33 @@ function ProfileDefaultSync() {
   return null;
 }
 
+/**
+ * v1 task 9 (permissions view). "My permissions" is always shown --
+ * self-service, no `ADMIN_API_TOKEN`/admin-grant gate (api-contract.md
+ * section 4). "Admin" is Developer-profile only, same "a technical/ops
+ * feature, not something Artist's simplification should soften" framing
+ * task 11 already uses for e.g. the raw-hash lock-acquire form -- it's
+ * still just a link either way; whether the admin proxy is actually
+ * enabled/reachable on this deployment is the destination route's own
+ * concern (../routes/admin-permissions.tsx renders the 404/403 honestly),
+ * not something the shell needs to know ahead of time.
+ */
+function PermissionsNav() {
+  const profile = useUiStore((state) => state.profile);
+  return (
+    <nav className="flex items-center gap-3 text-xs text-slate-400">
+      <Link to="/permissions" className="hover:text-slate-200">
+        My permissions
+      </Link>
+      {profile === "developer" && (
+        <Link to="/admin/permissions" className="hover:text-slate-200">
+          Admin
+        </Link>
+      )}
+    </nav>
+  );
+}
+
 /** Shared chrome for the browse views (task 1): a back link plus a heading. */
 export function PageShell({ title, backTo, backLabel, children }: PageShellProps) {
   return (
@@ -77,7 +104,10 @@ export function PageShell({ title, backTo, backLabel, children }: PageShellProps
           <h1 className="text-xl font-semibold">{title}</h1>
           <AuthIndicator />
         </div>
-        <ProfileToggle />
+        <div className="flex items-center gap-4">
+          <PermissionsNav />
+          <ProfileToggle />
+        </div>
       </header>
       <main className="p-6">{children}</main>
     </div>

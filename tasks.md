@@ -989,9 +989,9 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       - IdP-side MFA/step-up, token refresh, and multi-user concurrent
         sessions were not exercised (the demo stack's Dex mock connector
         has exactly one fixed identity, no password, no MFA).
-- [ ] 9. Permissions view backed by `epic-lore-authz` roles/grants. API
-      contract study (`docs/design/api-contract.md` section 4): a "my
-      permissions" view is fully supported today via
+- [x] [verified-e2e] 9. Permissions view backed by `epic-lore-authz`
+      roles/grants. API contract study (`docs/design/api-contract.md`
+      section 4): a "my permissions" view is fully supported today via
       `CheckUserPermission`/`LookupUserPermissions` (self-service, no
       `ADMIN_API_TOKEN` needed). An admin-view (viewing/managing *other*
       users' grants) has no self-service API -- only the
@@ -1000,6 +1000,153 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       and gates access to its own admin-proxy routes using
       `CheckUserPermission` against a convention this UI defines (e.g.
       `admin` on the `urc-*` wildcard resource).
+
+      **Layering decision:** permissions come entirely from
+      `epic-lore-authz`'s `UrcAuthApi`, never `lore-server`
+      (api-contract.md section 4 confirms no `lore-server` RPC is involved
+      at all) -- so fixture/real parity lives in the auth layer
+      (`apps/bff/src/auth/{authz-client,permissions-client,admin-client,
+      admin-gate}.ts`), NOT `LoreBackend`, which stays `lore-server`-only.
+
+      **Scope decision: both self-service AND the admin view were built.**
+      The admin view is buildable+testable now, confirmed live this
+      session (not assumed): the already-running demo stack's raw admin
+      HTTP surface (`http://localhost:18080/admin/v1/**`, the demo's
+      `DEMO_AUTHZ_HTTP_PORT`) answered real `GET /admin/v1/principals` and
+      `GET /admin/v1/grants` with its committed demo `ADMIN_API_TOKEN`; the
+      real logged-in demo user already holds two seeded `admin` grants
+      (`urc-0194b726b34e72b0b45550b88a967076`,
+      `urc-d1462510def162d8a0b29da98735d30e`) from this stack's own
+      history, closing the loop on whether "view other users' grants" has
+      real data to show. Per this task's fail-closed requirement, the admin
+      routes are OFF unless `ADMIN_API_TOKEN` is actually set --
+      `apps/bff/src/server.ts` only calls `registerAdminRoutes` inside an
+      `if (config.adminApiToken)` block, so an unset token means
+      `/api/admin/*` is never REGISTERED (a real `404`), not a route that
+      exists but denies.
+
+      **Built:** `packages/api-types/src/permission.ts`
+      (`ResourcePermissionDto`/`MyPermissionsResponseBody`/`AdminUserDto`/
+      `AdminUsersResponseBody`/`AdminGrantDto`/`AdminUserGrantsResponseBody`).
+      `apps/bff/src/auth/authz-client.ts` grew `lookupUserPermissions`
+      (paginates `LookupUserPermissions` via `next_page_token`, capped at
+      50 pages) and `checkUserPermission` (single `CheckUserPermission`
+      call), both using the session's own AuthN token -- confirmed live
+      this needs no per-repository AuthZ exchange, same as
+      `RepositoryList`/`RepositoryGet`. `apps/bff/src/auth/admin-gate.ts`
+      (pure, unit-tested): this UI's own "`admin` on the `urc-*` wildcard
+      resource" convention. `apps/bff/src/auth/permissions-client.ts`:
+      `PermissionsClient` (`lookupMyPermissions`/`checkAdminGrant`),
+      selected `grpc`-vs-`fixture` the same way `LoreBackend` already is in
+      `server.ts`; the fixture implementation's canned data uses the SAME
+      two resource ids `apps/bff/src/backend/fixture.ts`'s `REPO_LORE_ID`/
+      `REPO_WEBUI_ID` produce, so fixture mode's resource-id -> repository-
+      name join in the UI demonstrates working end to end, not just
+      "returns something." `apps/bff/src/auth/admin-client.ts`:
+      `AdminClient` (`listUsers`/`listGrantsForUser`) wrapping the raw
+      `/admin/v1/principals`/`/admin/v1/grants` `GET`s (no `POST`/`DELETE`
+      of any kind -- this task only ever reads), plus a fixture
+      implementation. `apps/bff/src/routes/permissions.ts` (`GET
+      /api/permissions/me`, always registered) and
+      `apps/bff/src/routes/admin.ts` (`GET /api/admin/users`, `GET
+      /api/admin/users/:userId/grants`, each request re-checking
+      `checkAdminGrant`, `403` on failure -- registered only when
+      `ADMIN_API_TOKEN` is set, wired from `apps/bff/src/server.ts`).
+      `apps/bff/src/config.ts` grew `ADMIN_API_TOKEN` (optional, unset by
+      default) and `ADMIN_AUTHZ_HTTP_ADDR` (default `localhost:18080`,
+      matching the demo's `DEMO_AUTHZ_HTTP_PORT`). Web:
+      `apps/web/src/permissions/format.ts` (pure, unit-tested):
+      resource-id -> repository-name join against already-fetched `GET
+      /api/repositories` data, falling back honestly
+      ("All repositories"/"Other resource" in Artist, raw id in Developer)
+      when unknown -- never a fabricated name; permission-string ->
+      friendly label (`admin`/`write`/`read` -> "Full control"/"Can
+      edit"/"Can view"). `apps/web/src/routes/permissions.tsx` (route
+      `/permissions`, always reachable, both profiles) and
+      `apps/web/src/routes/admin-permissions.tsx` (route
+      `/admin/permissions`, Developer-profile only -- Artist sees an
+      explanatory note, same profile-gated-panel pattern task 11
+      established -- renders a real, distinguishable `404`
+      "admin proxy not enabled" vs. `403` "you lack the admin grant" via a
+      newly-exported `ApiError.status`, `apps/web/src/api/lore-client.ts`).
+      `apps/web/src/components/page-shell.tsx` grew a persistent
+      "My permissions" link (always) and an "Admin" link (Developer
+      profile only), reachable from every route with zero per-route
+      wiring, same convention `ProfileToggle`/`AuthIndicator` already use.
+
+      **Verified live** (already-running demo stack, read-only inspection
+      only -- no writes to `epic-lore-authz`'s database or source, see
+      log.log for the full command/response trail): real login (the same
+      `StartAuthSession` -> follow `login_url` through the real Dex mock
+      connector -> `GetAuthSession` sequence task 8 proved, via `grpcurl` +
+      `curl`) produced a real session for the real demo user (`af862d98-...`,
+      "Kilgore Trout"); direct `grpcurl` calls BEFORE writing any BFF code
+      confirmed `LookupUserPermissions(resource_filter="")` returns that
+      user's real 2 seeded `admin` grants and `CheckUserPermission(["urc-*"])`
+      correctly DENIES (no wildcard grant provisioned in this demo); with
+      the BFF running in `LORE_BACKEND=grpc` (`SESSION_SECRET` set,
+      `COOKIE_SECURE=false`) and the real session cookie: unauthenticated
+      `GET /api/permissions/me` -> real `401`; authenticated ->
+      `{"permissions":[{"resourceId":"urc-0194b726b34e72b0b45550b88a967076",
+      "permission":["admin","read","write"]},{"resourceId":"urc-d1462510def162d8a0b29da98735d30e",
+      "permission":["admin","read","write"]}]}` -- byte-identical in shape
+      to the direct `grpcurl` call, through the real BFF route; with
+      `ADMIN_API_TOKEN=<value from epic-lore-authz demo compose, redacted here>` and
+      `ADMIN_AUTHZ_HTTP_ADDR=localhost:18080` also set, the SAME real
+      session hit `GET /api/admin/users` and got a real, live `403`
+      (`"forbidden: admin grant required..."`) -- proving the gate's deny
+      path end to end, since this real user holds specific-repository
+      `admin` grants but no `urc-*` wildcard grant; separately, the actual
+      compiled `createAuthzAdminClient` (not a curl equivalent -- the real
+      module, invoked directly, bypassing only the route's own gate)
+      called the live demo's `/admin/v1/principals` and
+      `/admin/v1/grants` and correctly mapped both real responses,
+      confirming the admin-proxy's HTTP mechanics work end to end against
+      live data. Fixture mode (`LORE_BACKEND=fixture`): `GET
+      /api/permissions/me` returned the 2 canned fixture-repo entries,
+      matching `GET /api/repositories`'s real fixture repo ids exactly (the
+      name-join demonstrated, not just plumbed); with
+      `ADMIN_API_TOKEN=fixture-admin-token` set, `GET /api/admin/users` and
+      `GET /api/admin/users/fixture-user/grants` both returned real canned
+      data through the full route/gate/client stack (fixture mode's
+      `checkAdminGrant` always allows, matching task 8's "fixture mode has
+      no auth concept at all" precedent); with `ADMIN_API_TOKEN` unset
+      (the default), `GET /api/admin/users` -> real `404`
+      (`{"error":"not found"}`), proving the fail-closed-by-absence
+      behavior, not just a documented intention. `pnpm -r run
+      typecheck`/`lint`/`build` all exit 0 (4/4 workspaces); `apps/bff`
+      vitest 31/31 pass (5 new: `admin-gate.test.ts`); `apps/web` vitest
+      57/57 pass (12 new: `permissions/format.test.ts`). All test BFF
+      processes (ports 3601-3604) killed and confirmed dead (`ps` empty,
+      every port connection-refused) afterward; `epic-lore-authz`'s demo
+      stack confirmed still running/healthy and its grants table
+      byte-identical before and after this session (same 2 grant ids,
+      re-`curl`ed at the end).
+
+      **Not done / honestly named:**
+      - The admin gate's ALLOW path (a caller who genuinely holds `admin`
+        on `urc-*`) is NOT proven live end-to-end through the gate itself
+        -- no principal in this demo stack holds that wildcard grant, and
+        provisioning one would mean writing to the demo's database, which
+        this task deliberately avoided (per standing instructions: demo
+        stack read-only inspection only). It is proven via (a) unit tests
+        on the pure gate logic (`admin-gate.test.ts`, both allow and deny
+        cases), (b) the fixture path exercising the identical route/gate/
+        client code end to end with a gate that always allows, and (c) the
+        real `createAuthzAdminClient` proven live directly (bypassing only
+        the gate). A real deployment would provision the wildcard grant via
+        one `POST /admin/v1/grants` call against the same admin API the
+        proxy itself already calls through -- no new `epic-lore-authz`
+        capability needed.
+      - `/admin/v1/grants` has no server-side filter by principal
+        (confirmed against `lore-authz-server/src/admin/mod.rs`'s route
+        table -- `list_grants` takes no query extractor), so
+        `listGrantsForUser` fetches the full, `admin::LIST_LIMIT`-bounded
+        list and filters client-side; fine at this demo's scale, a real
+        concern only at a principal/grant count near that limit.
+      - No principal/group/resource/grant management (create/suspend/
+        delete) was built -- this task's brief was "view," and the BFF
+        proxy here issues only `GET`s against `/admin/v1/**`.
 - [ ] 10. Live notifications via `lore.notification.NotificationService`
       (corrected from `urc.notification`: API contract study,
       `docs/design/api-contract.md` section 1 feature 10, confirms

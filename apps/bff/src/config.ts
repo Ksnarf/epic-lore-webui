@@ -75,6 +75,29 @@ export interface BffConfig {
   /** v1 task 11 extension. See `profileGroupsArtist` -- same shape, resolves to "developer". */
   profileGroupsDeveloper: string[];
   /**
+   * v1 task 9 (permissions view), admin view. `epic-lore-authz`'s shared
+   * secret gating its ENTIRE `/admin/v1/**` surface
+   * (`lore-authz-server/src/admin/auth.rs`) -- read from environment only,
+   * never hardcoded, never sent to the browser (only ../auth/admin-client.ts
+   * ever presents it, server-side). **Unset by default, and that is the
+   * fail-closed posture this task's brief requires**: `undefined` means
+   * ../server.ts never calls `registerAdminRoutes` at all, so
+   * `/api/admin/*` does not exist (a real 404), not a route that exists but
+   * denies. Set this only alongside `ADMIN_AUTHZ_HTTP_ADDR` below.
+   */
+  adminApiToken: string | undefined;
+  /**
+   * v1 task 9, admin view. `host:port` of `epic-lore-authz`'s raw HTTP
+   * listener (`/admin/v1/**`, `/.well-known/jwks.json`, ...) -- a DIFFERENT
+   * port than `authzServerAddr` above, which is that same service's gRPC
+   * listener. Default `localhost:18080` matches the `epic-lore-authz` demo
+   * docker-compose stack's `DEMO_AUTHZ_HTTP_PORT` default (confirmed live
+   * this session: `GET http://localhost:18080/admin/v1/principals` with the
+   * demo's `ADMIN_API_TOKEN` returned real principal data). Only read when
+   * `adminApiToken` is set.
+   */
+  adminAuthzHttpAddr: string;
+  /**
    * v1 task 11 extension. Comma-separated fake group names the FIXTURE auth
    * path (../routes/auth.ts) reports for its synthetic signed-in user, so
    * the whole claim-extraction -> mapping -> `defaultProfile` chain is
@@ -123,6 +146,8 @@ function isLoreBackendKind(value: string): value is LoreBackendKind {
  * | `PROFILE_GROUPS_ARTIST`    | (empty)      | comma-separated group names -> "artist" default (task 11 ext) |
  * | `PROFILE_GROUPS_DEVELOPER` | (empty)      | comma-separated group names -> "developer" default (task 11 ext) |
  * | `FIXTURE_GROUPS`     | (empty)            | comma-separated fake groups for the fixture auth path (task 11 ext) |
+ * | `ADMIN_API_TOKEN`    | (unset)            | `epic-lore-authz` admin-surface bearer secret -- unset disables `/api/admin/*` entirely (task 9) |
+ * | `ADMIN_AUTHZ_HTTP_ADDR` | `localhost:18080` | `epic-lore-authz`'s raw HTTP (admin) listener, only read when `ADMIN_API_TOKEN` is set (task 9) |
  */
 export function loadConfig(): BffConfig {
   const rawBackend = process.env.LORE_BACKEND ?? "fixture";
@@ -158,5 +183,7 @@ export function loadConfig(): BffConfig {
     profileGroupsArtist: parseGroupList(process.env.PROFILE_GROUPS_ARTIST),
     profileGroupsDeveloper: parseGroupList(process.env.PROFILE_GROUPS_DEVELOPER),
     fixtureGroups: parseGroupList(process.env.FIXTURE_GROUPS),
+    adminApiToken: process.env.ADMIN_API_TOKEN || undefined,
+    adminAuthzHttpAddr: process.env.ADMIN_AUTHZ_HTTP_ADDR ?? "localhost:18080",
   };
 }

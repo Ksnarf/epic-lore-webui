@@ -1,4 +1,6 @@
 import type {
+  AdminUserGrantsResponseBody,
+  AdminUsersResponseBody,
   AuthStatusResponseBody,
   BranchListResponseBody,
   ContentDiffResponseBody,
@@ -7,6 +9,7 @@ import type {
   LockListResponseBody,
   LockReleaseRequestBody,
   LockReleaseResponseBody,
+  MyPermissionsResponseBody,
   RepositoryGetResponseBody,
   RepositoryListResponseBody,
   RevisionDiffResponseBody,
@@ -24,7 +27,15 @@ import type {
  * browser never speaks gRPC, per docs/design/stack-decision.md.
  */
 
-class ApiError extends Error {
+/**
+ * Exported (unlike before v1 task 9) so a route can render a specific
+ * status honestly -- the admin permissions page (../routes/admin-permissions.tsx)
+ * distinguishes a `404` ("admin proxy not enabled on this deployment",
+ * `ADMIN_API_TOKEN` unset -- apps/bff/src/server.ts never registers the
+ * routes at all) from a `403` ("you don't hold the admin grant") instead of
+ * both rendering as the same generic failure.
+ */
+export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
@@ -201,4 +212,27 @@ export function fetchRevisionDiff(
 export function fetchContentDiff(repositoryId: string, from: string, to: string): Promise<ContentDiffResponseBody> {
   const params = new URLSearchParams({ from, to });
   return getJson(`/api/repositories/${encodeURIComponent(repositoryId)}/content-diff?${params.toString()}`);
+}
+
+/**
+ * v1 task 9 (permissions view), self-service half. Always reachable --
+ * `apps/bff/src/routes/permissions.ts` has no `ADMIN_API_TOKEN` gate.
+ */
+export function fetchMyPermissions(): Promise<MyPermissionsResponseBody> {
+  return getJson("/api/permissions/me");
+}
+
+/**
+ * v1 task 9, admin view. May 404 (admin proxy disabled on this deployment)
+ * or 403 (caller lacks the admin grant) -- both real, distinguishable
+ * `ApiError.status` values the admin permissions route renders honestly
+ * rather than treating as the same generic failure.
+ */
+export function fetchAdminUsers(): Promise<AdminUsersResponseBody> {
+  return getJson("/api/admin/users");
+}
+
+/** v1 task 9, admin view. Same 404/403 possibilities as `fetchAdminUsers`. */
+export function fetchAdminUserGrants(userId: string): Promise<AdminUserGrantsResponseBody> {
+  return getJson(`/api/admin/users/${encodeURIComponent(userId)}/grants`);
 }
