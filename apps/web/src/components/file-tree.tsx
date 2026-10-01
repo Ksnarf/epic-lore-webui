@@ -1,5 +1,7 @@
 import type { TreeNodeDto } from "@epic-lore-webui/api-types";
 import { Link } from "react-router";
+import { formatByteSize } from "../profile/format.js";
+import { colorForLabel, fileExtensionLabel } from "../profile/placeholder.js";
 import { useRevisionTreeQuery } from "../queries/lore.js";
 import { useUiStore } from "../store/ui-store.js";
 
@@ -61,6 +63,7 @@ function TreeEntry({
 }) {
   const expanded = useUiStore((state) => state.expandedTreePaths.has(node.path));
   const toggleTreePath = useUiStore((state) => state.toggleTreePath);
+  const profile = useUiStore((state) => state.profile);
   const isDirectory = node.nodeType === "DIRECTORY";
   const isSelected = node.path === selectedPath;
 
@@ -90,11 +93,27 @@ function TreeEntry({
         )}
         <Link
           to={`/repositories/${repositoryId}/branches/${branchId}/${node.path}`}
-          className="truncate"
+          className="flex min-w-0 items-center truncate"
         >
-          {name}
+          {!isDirectory && profile === "artist" && (
+            // Honest placeholder, not a thumbnail: asset preview (task 4)
+            // isn't built, so there is no real image to show. A
+            // deterministic color + extension label (../profile/placeholder.ts)
+            // gives files visual distinctness without faking content.
+            <span
+              aria-hidden="true"
+              title="No preview available (asset preview is not built yet)"
+              className="mr-1.5 inline-flex h-4 w-7 shrink-0 items-center justify-center rounded-sm text-[8px] font-bold leading-none text-slate-950"
+              style={{ backgroundColor: colorForLabel(node.path) }}
+            >
+              {fileExtensionLabel(node.path).slice(0, 3)}
+            </span>
+          )}
+          <span className="truncate">{name}</span>
         </Link>
-        {!isDirectory && <span className="ml-auto shrink-0 pl-2 text-xs text-slate-500">{node.size}B</span>}
+        {!isDirectory && (
+          <span className="ml-auto shrink-0 pl-2 text-xs text-slate-500">{formatByteSize(node.size, profile)}</span>
+        )}
       </div>
       {isDirectory && expanded && (
         <ul>

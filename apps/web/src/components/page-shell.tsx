@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router";
+import { ProfileToggle } from "./profile-toggle.js";
 import { useAuthStatusQuery } from "../queries/lore.js";
 
 interface PageShellProps {
@@ -37,14 +38,17 @@ function AuthIndicator() {
 export function PageShell({ title, backTo, backLabel, children }: PageShellProps) {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="border-b border-slate-800 px-6 py-4">
-        {backTo && (
-          <Link to={backTo} className="mb-1 block text-sm text-slate-400 hover:text-slate-200">
-            &larr; {backLabel ?? "Back"}
-          </Link>
-        )}
-        <h1 className="text-xl font-semibold">{title}</h1>
-        <AuthIndicator />
+      <header className="flex items-start justify-between gap-4 border-b border-slate-800 px-6 py-4">
+        <div className="min-w-0">
+          {backTo && (
+            <Link to={backTo} className="mb-1 block text-sm text-slate-400 hover:text-slate-200">
+              &larr; {backLabel ?? "Back"}
+            </Link>
+          )}
+          <h1 className="text-xl font-semibold">{title}</h1>
+          <AuthIndicator />
+        </div>
+        <ProfileToggle />
       </header>
       <main className="p-6">{children}</main>
     </div>

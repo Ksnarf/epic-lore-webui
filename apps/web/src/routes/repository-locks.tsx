@@ -3,12 +3,14 @@ import { useState, type FormEvent } from "react";
 import { useParams } from "react-router";
 import { PageShell } from "../components/page-shell.js";
 import { groupLocksByBranch } from "../locks/group-locks.js";
+import { formatLockTimestamp } from "../profile/format.js";
 import {
   useAcquireLockMutation,
   useBranchesQuery,
   useLocksQuery,
   useReleaseLockMutation,
 } from "../queries/lore.js";
+import { useUiStore } from "../store/ui-store.js";
 
 /**
  * v1 task 5 (lock management across all branches). Route:
@@ -28,6 +30,7 @@ export function RepositoryLocksRoute() {
   const locksQuery = useLocksQuery(repositoryId ?? "");
   const acquireMutation = useAcquireLockMutation(repositoryId ?? "");
   const releaseMutation = useReleaseLockMutation(repositoryId ?? "");
+  const profile = useUiStore((state) => state.profile);
 
   const [branchId, setBranchId] = useState<string>("");
   const [hash, setHash] = useState<string>("");
@@ -77,50 +80,64 @@ export function RepositoryLocksRoute() {
 
   return (
     <PageShell title="Locks" backTo={`/repositories/${repositoryId}`} backLabel="Branches">
-      <form onSubmit={handleAcquire} className="mb-6 flex flex-wrap items-end gap-3 rounded border border-slate-800 p-4">
-        <label className="flex flex-col text-xs text-slate-400">
-          Branch
-          <select
-            value={branchId}
-            onChange={(event) => setBranchId(event.target.value)}
-            className="mt-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-100"
+      {profile === "developer" ? (
+        <form onSubmit={handleAcquire} className="mb-6 flex flex-wrap items-end gap-3 rounded border border-slate-800 p-4">
+          <label className="flex flex-col text-xs text-slate-400">
+            Branch
+            <select
+              value={branchId}
+              onChange={(event) => setBranchId(event.target.value)}
+              className="mt-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-100"
+            >
+              <option value="">Select branch...</option>
+              {branches.map((branch) => (
+                <option key={branch.id} value={branch.id}>
+                  {branch.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col text-xs text-slate-400">
+            Description (path)
+            <input
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="crates/lore-server/src/main.rs"
+              className="mt-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-100"
+            />
+          </label>
+          <label className="flex flex-col text-xs text-slate-400">
+            Hash (hex)
+            <input
+              value={hash}
+              onChange={(event) => setHash(event.target.value)}
+              placeholder="content address, hex"
+              className="mt-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-100"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={acquireMutation.isPending}
+            className="rounded bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 disabled:opacity-50"
           >
-            <option value="">Select branch...</option>
-            {branches.map((branch) => (
-              <option key={branch.id} value={branch.id}>
-                {branch.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col text-xs text-slate-400">
-          Description (path)
-          <input
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            placeholder="crates/lore-server/src/main.rs"
-            className="mt-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-100"
-          />
-        </label>
-        <label className="flex flex-col text-xs text-slate-400">
-          Hash (hex)
-          <input
-            value={hash}
-            onChange={(event) => setHash(event.target.value)}
-            placeholder="content address, hex"
-            className="mt-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-100"
-          />
-        </label>
-        <button
-          type="submit"
-          disabled={acquireMutation.isPending}
-          className="rounded bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 disabled:opacity-50"
-        >
-          {acquireMutation.isPending ? "Locking..." : "Acquire lock"}
-        </button>
-      </form>
-      {formError && <p className="mb-4 text-sm text-red-400">{formError}</p>}
-      {acquireMutation.isError && (
+            {acquireMutation.isPending ? "Locking..." : "Acquire lock"}
+          </button>
+        </form>
+      ) : (
+        // Artist profile: acquiring a lock needs a raw 32-byte content hash
+        // typed by hand -- task 5's own finding 4 is that a short/malformed
+        // hash is silently accepted by the real server and locks the wrong
+        // resource. That's exactly the kind of technical footgun this
+        // task's brief says to hide, not expose with friendlier labels.
+        // Release (below) needs no typed hash -- it's read from the
+        // already-loaded lock -- so it stays available here.
+        <p className="mb-6 rounded border border-slate-800 bg-slate-900/60 p-4 text-sm text-slate-400">
+          Acquiring a new lock needs a technical content reference. Switch to Developer view (top right) to lock a
+          file, or release one of your own locks below.
+        </p>
+      )}
+      {profile === "developer" && formError && <p className="mb-4 text-sm text-red-400">{formError}</p>}
+      {profile === "developer" && acquireMutation.isError && (
         <p className="mb-4 text-sm text-red-400">Acquire failed: {(acquireMutation.error as Error).message}</p>
       )}
       {releaseMutation.isError && (
@@ -145,10 +162,23 @@ export function RepositoryLocksRoute() {
                 className="flex items-center justify-between px-4 py-3"
               >
                 <div>
-                  <div className="text-sm text-slate-100">{lock.resource.description}</div>
-                  <div className="text-xs text-slate-500">
-                    locked by {lock.owner} &middot; {new Date(Number(lock.lockedAt)).toISOString()}
-                  </div>
+                  {profile === "developer" ? (
+                    <>
+                      <div className="text-sm text-slate-100">{lock.resource.description}</div>
+                      <div className="text-xs text-slate-500">
+                        locked by {lock.owner} &middot; {formatLockTimestamp(lock.lockedAt, profile)}
+                      </div>
+                    </>
+                  ) : (
+                    // Artist profile: "who's working on what" front and
+                    // center -- the owner is the lead line, the file is
+                    // secondary, per this task's brief.
+                    <>
+                      <div className="text-sm font-medium text-slate-100">{lock.owner}</div>
+                      <div className="text-xs text-slate-400">{lock.resource.description}</div>
+                      <div className="text-xs text-slate-500">{formatLockTimestamp(lock.lockedAt, profile)}</div>
+                    </>
+                  )}
                 </div>
                 <button
                   type="button"

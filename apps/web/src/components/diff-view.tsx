@@ -1,5 +1,7 @@
 import type { ContentDiffResponseBody, DiffChangeDto } from "@epic-lore-webui/api-types";
 import { parseUnifiedDiff } from "../diff/unified-diff.js";
+import { HIDDEN_TECHNICAL_DETAIL_NOTE, showsTechnicalDetail } from "../profile/format.js";
+import { useUiStore } from "../store/ui-store.js";
 
 interface DiffViewProps {
   change: DiffChangeDto;
@@ -23,6 +25,7 @@ interface DiffViewProps {
  * descope note.
  */
 export function DiffView({ change, contentDiff, isLoading, error }: DiffViewProps) {
+  const profile = useUiStore((state) => state.profile);
   if (change.linkRepositoryIndex !== 0) {
     return (
       <div className="rounded border border-amber-900 bg-amber-950/40 p-4 text-sm text-amber-200">
@@ -52,12 +55,16 @@ export function DiffView({ change, contentDiff, isLoading, error }: DiffViewProp
           `ContentDiff` reports this content as binary and emits no diff body (no thumbnail or chunk-level delta
           exists server-side today -- see tasks.md task 3).
         </p>
-        <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs text-slate-500">
-          <dt>from</dt>
-          <dd className="truncate">{change.contentFrom || "(none)"}</dd>
-          <dt>to</dt>
-          <dd className="truncate">{change.contentTo || "(none)"}</dd>
-        </dl>
+        {showsTechnicalDetail(profile) ? (
+          <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs text-slate-500">
+            <dt>from</dt>
+            <dd className="truncate">{change.contentFrom || "(none)"}</dd>
+            <dt>to</dt>
+            <dd className="truncate">{change.contentTo || "(none)"}</dd>
+          </dl>
+        ) : (
+          <p className="mt-3 text-xs text-slate-500">{HIDDEN_TECHNICAL_DETAIL_NOTE}</p>
+        )}
       </div>
     );
   }

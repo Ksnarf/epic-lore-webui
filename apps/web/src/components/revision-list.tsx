@@ -1,6 +1,8 @@
 import type { RevisionItemDto } from "@epic-lore-webui/api-types";
 import { Link } from "react-router";
 import { GRAPH_ROW_HEIGHT } from "../graph/layout.js";
+import { revisionLabel } from "../profile/format.js";
+import { useUiStore } from "../store/ui-store.js";
 
 interface RevisionListProps {
   items: RevisionItemDto[];
@@ -31,6 +33,7 @@ export function RevisionList({
   isFetchingNextPage,
   onLoadMore,
 }: RevisionListProps) {
+  const profile = useUiStore((state) => state.profile);
   return (
     <div className="min-w-0 flex-1">
       <ul className="divide-y divide-slate-800 rounded border border-slate-800 font-mono text-sm">
@@ -53,8 +56,7 @@ export function RevisionList({
                   isSelected ? "bg-slate-800" : "hover:bg-slate-900"
                 }`}
               >
-                <span className="text-slate-500">#{item.number}</span>
-                <span className="truncate text-slate-300">{item.signature.slice(0, 12)}</span>
+                <span className="truncate text-slate-300">{revisionLabel(item, profile)}</span>
               </button>
               {canDiffVsPrevious && (
                 <Link

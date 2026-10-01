@@ -3,6 +3,7 @@ import { PageShell } from "../components/page-shell.js";
 import { RevisionGraph } from "../components/revision-graph.js";
 import { RevisionList } from "../components/revision-list.js";
 import { useRevisionGraph } from "../graph/use-revision-graph.js";
+import { useUiStore } from "../store/ui-store.js";
 
 /**
  * v1 task 2 (revision history + multi-lane branch graph). Route:
@@ -28,6 +29,7 @@ export function BranchHistoryRoute() {
     repositoryId ?? "",
     branchId ?? "",
   );
+  const profile = useUiStore((state) => state.profile);
 
   if (!repositoryId || !branchId) {
     return null;
@@ -67,9 +69,19 @@ export function BranchHistoryRoute() {
             isFetchingNextPage={focusRevisionsQuery.isFetchingNextPage}
             onLoadMore={() => void focusRevisionsQuery.fetchNextPage()}
           />
-          <div className="overflow-x-auto">
-            <RevisionGraph graph={graph} selectedNodeId={selectedNodeId} onSelectNode={handleSelectNode} />
-          </div>
+          {profile === "developer" ? (
+            <div className="overflow-x-auto">
+              <RevisionGraph graph={graph} selectedNodeId={selectedNodeId} onSelectNode={handleSelectNode} />
+            </div>
+          ) : (
+            // Artist profile: the multi-lane branch graph is exactly the
+            // "lane graph detail" this task's brief names as something to
+            // demote -- hidden here, not removed (switching back to
+            // Developer shows it again, same data, same selection).
+            <p className="w-48 shrink-0 text-xs text-slate-500">
+              The full branch graph is a Developer-view feature. Switch profiles (top right) to see it.
+            </p>
+          )}
         </div>
       )}
     </PageShell>

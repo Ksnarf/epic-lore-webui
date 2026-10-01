@@ -1,4 +1,8 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import type { Profile } from "../profile/format.js";
+
+export type { Profile } from "../profile/format.js";
 
 /**
  * Zustand store for cross-cutting UI state that has no server
@@ -6,9 +10,15 @@ import { create } from "zustand";
  * active profile (Developer vs. Artist, task 11), file-tree expansion and
  * selection (task 1), diff view mode, toast queue, etc. Server/RPC data
  * belongs in TanStack Query instead, never here.
+ *
+ * v1 task 11: `profile` is wrapped in `zustand/persist` (localStorage) so
+ * the Developer/Artist choice survives a page reload -- a per-browser user
+ * preference, not something tied to one visit or one server session.
+ * `partialize` below persists *only* `profile`; `expandedTreePaths` /
+ * `selectedTreePath` deliberately stay unpersisted/in-memory, matching
+ * their existing task-1 behavior (tree expansion resets on reload today,
+ * and this task doesn't change that).
  */
-export type Profile = "developer" | "artist";
-
 interface UiState {
   profile: Profile;
   setProfile: (profile: Profile) => void;
@@ -34,22 +44,30 @@ interface UiState {
   setSelectedTreePath: (path: string | null) => void;
 }
 
-export const useUiStore = create<UiState>((set) => ({
-  profile: "developer",
-  setProfile: (profile) => set({ profile }),
+export const useUiStore = create<UiState>()(
+  persist(
+    (set) => ({
+      profile: "developer",
+      setProfile: (profile) => set({ profile }),
 
-  expandedTreePaths: new Set<string>(),
-  toggleTreePath: (path) =>
-    set((state) => {
-      const next = new Set(state.expandedTreePaths);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return { expandedTreePaths: next };
+      expandedTreePaths: new Set<string>(),
+      toggleTreePath: (path) =>
+        set((state) => {
+          const next = new Set(state.expandedTreePaths);
+          if (next.has(path)) {
+            next.delete(path);
+          } else {
+            next.add(path);
+          }
+          return { expandedTreePaths: next };
+        }),
+
+      selectedTreePath: null,
+      setSelectedTreePath: (path) => set({ selectedTreePath: path }),
     }),
-
-  selectedTreePath: null,
-  setSelectedTreePath: (path) => set({ selectedTreePath: path }),
-}));
+    {
+      name: "epic-lore-webui.ui-profile",
+      partialize: (state) => ({ profile: state.profile }),
+    },
+  ),
+);

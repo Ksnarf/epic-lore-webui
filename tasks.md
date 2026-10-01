@@ -1009,4 +1009,146 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       only, scoped per-repository -- grpc-web-compatible if that transport
       were chosen, and straightforwardly proxyable by the BFF (recommended
       transport, see pre-work stack decision) via SSE/WebSocket.
-- [ ] 11. [ux] Dual profile: Developer view vs. Artist (simplified) view
+- [x] [verified-e2e] 11. [ux] Dual profile: Developer view vs. Artist
+      (simplified) view. API contract study (`docs/design/api-contract.md`
+      section 11): "not an API concern -- UI-side view composition over the
+      same RPCs already listed," no proto gap. Stack decision doc
+      (`docs/design/stack-decision.md`, "Components"): "not a fork of the
+      UI" -- a capability-flag plus layout layer over the one component set,
+      deciding which panels show and how dense/labeled they are. Built
+      exactly that: no new routes, no BFF/DTO changes, no second component
+      tree.
+
+      **State + persistence:** `profile: "developer" | "artist"`
+      (`apps/web/src/store/ui-store.ts`, pre-existing stub from the
+      stack-decision scaffold) wrapped in `zustand/persist`
+      (`partialize`-scoped to `profile` only -- file-tree expansion state
+      stays unpersisted, unchanged from today). Persisted to `localStorage`
+      under `epic-lore-webui.ui-profile`: tasks.md's own task 11 line never
+      specified a mechanism, and this is a durable per-browser preference,
+      not a per-session one, so `localStorage` over `sessionStorage` was the
+      interpretation call made here. No new dependency -- `zustand/persist`
+      is a subpath of the already-installed `zustand` package.
+
+      **Pure, testable display layer:** `apps/web/src/profile/format.ts`
+      (`shortHex`/`revisionLabel`/`showsTechnicalDetail`/`formatByteSize`/
+      `relativeTimeFromNow`/`formatLockTimestamp`) and
+      `apps/web/src/profile/placeholder.ts` (`colorForLabel`/
+      `fileExtensionLabel`) -- no React/DOM/store import in either, same
+      convention as `graph/lane-assignment.ts`/`locks/group-locks.ts`/
+      `diff/unified-diff.ts`, with 26 new vitest unit tests
+      (`format.test.ts` 16, `placeholder.test.ts` 10) covering both
+      profiles' formatting, edge cases (empty/non-numeric/short strings),
+      and the relative-time ladder (minutes/hours/days/future-skew).
+
+      **A single switcher, mounted once:** `apps/web/src/components/
+      profile-toggle.tsx`, a 2-option `radiogroup` wired to the store,
+      mounted in `apps/web/src/components/page-shell.tsx`'s shared header
+      -- present on every `PageShell`-based route (all of them except
+      `sign-in.tsx`) with zero per-route wiring. Switching profiles only
+      ever calls `setProfile`; it never touches the router, so deep links
+      resolve identically in both profiles (same route, same data, same
+      selection) -- only presentation differs, per this task's own
+      constraint.
+
+      **What Developer keeps (unchanged from pre-task-11 behavior):** exact
+      byte counts in the file tree; `#<number> <12-char hex signature>` in
+      the revision list; the full multi-lane SVG branch graph in history;
+      raw CAS content-address hex in the diff view's binary-file card; the
+      lock-acquire form's raw 32-byte hex hash input; ISO-instant lock
+      timestamps.
+
+      **What Artist hides/demotes, and why (per this task's design-intent
+      brief):**
+      - Revision list (`components/revision-list.tsx`): signature hex
+        dropped entirely (not just shortened) -- `Revision 12`, not
+        `#12 a1b2…`. A content hash is not an identity a non-technical user
+        needs.
+      - Branch history (`routes/branch-history.tsx`): the multi-lane SVG
+        graph is hidden outright -- exactly the "lane graph detail" this
+        task's brief names -- replaced with a one-line honest note
+        ("switch profiles to see it"), not removed functionality.
+      - Diff view (`components/diff-view.tsx`): the binary-file card's raw
+        `contentFrom`/`contentTo` hex is replaced with a shared, consistent
+        note (`format.ts`'s `HIDDEN_TECHNICAL_DETAIL_NOTE`); the actual
+        text-diff hunks (real file content, not technical chrome) render
+        identically in both profiles.
+      - File tree (`components/file-tree.tsx`): byte counts become
+        human-scaled (`512 B`/`2.0 KB`/`5.0 MB`); each file also gets an
+        honest placeholder swatch (`profile/placeholder.ts`'s
+        `colorForLabel`/`fileExtensionLabel`, a deterministic
+        color+extension derived from the real path) -- explicitly NOT a
+        thumbnail, since task 4 (asset preview) is unbuilt and there is no
+        real image data to show; the swatch's `title` says so outright.
+      - Locks (`routes/repository-locks.tsx`, this task's "who's working on
+        what front and center" ask): lock rows re-order to owner-first,
+        description-second; timestamps become relative
+        (`formatLockTimestamp`, e.g. "2 hours ago") instead of ISO instants.
+        The acquire-lock form is hidden entirely, replaced with an honest
+        note directing the user to Developer view -- a deliberate
+        functionality cut, not an oversight: task 5's own finding 4 is that
+        the real server silently zeroes a hash shorter than 32 bytes
+        instead of rejecting it (locking the wrong resource with no error),
+        and resolving a real hash from the file tree automatically is
+        out of this task's scope (task 5's note). Release needs no typed
+        hash (it's read from the already-loaded lock), so it stays
+        available in both profiles.
+      - Repository branches (`routes/repository-branches.tsx`): the
+        existing small "View locks" text link becomes a bordered, more
+        prominent callout ("See who's working on what →") one step earlier
+        in the navigation flow -- same link, same route, just elevated.
+
+      **Design decisions, recorded per this task's "no AI-default slop"
+      discipline:** no new UI library (the toggle, swatches, and relative-
+      time formatting are plain Tailwind + native `Intl.RelativeTimeFormat`,
+      zero new npm dependencies); the swatch palette reuses
+      `revision-graph.tsx`'s existing 8-color `LANE_COLORS` set rather than
+      inventing a second one, so Developer's graph and Artist's file-tree
+      swatches read as one system; motion is a single `transition-colors`
+      on the toggle's active segment (ui-motion's Level 1, MOTION_INTENSITY
+      1-2 for this internal tool -- state-change feedback only, no
+      animation beyond that).
+
+      Evidence (real commands, run 2026-10-01):
+      - `pnpm -r run typecheck`/`lint`/`build`: all exit 0 across all 4
+        buildable workspaces.
+      - `pnpm --filter @epic-lore-webui/web run test`: 40/40 pass (14
+        pre-existing + 26 new: `profile/format.test.ts`,
+        `profile/placeholder.test.ts`).
+      - `pnpm --filter @epic-lore-webui/bff run test`: 11/11 pass,
+        unaffected (this task touches no BFF file).
+      - **Real interactive verification, not just a static-HTML curl
+        check:** installed a local Playwright Chromium (`npm install
+        playwright@1.63.0` inside the session's scratchpad directory only
+        -- never added to this repo's `package.json`/lockfile), booted the
+        real BFF (`PORT=3401 LORE_BACKEND=fixture node apps/bff/dist/
+        server.js`, serving the actual `apps/web/dist` production build via
+        `@fastify/static`, the same artifact `pnpm -r run build` above
+        produced), and drove a real browser against it end-to-end: 22/22
+        scripted checks passed -- default profile is Developer; the lane
+        graph and hex both disappear on switching to Artist, replaced by
+        the honest note; the choice survives a full page reload
+        (`localStorage`, not just React state); a direct deep link into the
+        diff route works identically and the binary card's hex is hidden
+        under the persisted Artist profile; the locks route's acquire form
+        disappears under Artist and reappears when switching back to
+        Developer; the branches-page locks callout and the file-tree
+        swatch render only in Artist; a keyboard-only Tab+Enter reached and
+        activated the toggle with a visible focus ring. BFF process killed
+        and confirmed dead afterward (`ps` empty, port free, follow-up
+        `curl` connection-failed).
+
+      **Honest limits of this verification:** this task touches no BFF/
+      route/DTO/proto surface (confirmed by api-contract.md section 11), so
+      there was nothing here to validate against the live
+      `epic-lore-authz`/`lore-server` demo stack the way tasks 1/2/3/5/8
+      did -- fixture-mode data is the correct and sufficient backend for a
+      presentation-only feature, not a shortcut taken under time pressure.
+      The interactive pass above ran in one local headless Chromium on one
+      machine; it was not cross-browser-tested, not tested on a real mobile
+      viewport (this repo is desktop-first by design, per
+      docs/design/stack-decision.md), and did not re-test every route this
+      task touches under Artist profile (e.g. `repository-branches.tsx`'s
+      branch list itself, `branch-tree.tsx`'s non-file-tree chrome) --
+      the checks above targeted the specific hide/demote/elevate claims
+      made in this entry, not an exhaustive click-every-pixel pass.
