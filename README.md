@@ -175,6 +175,10 @@ defaults; never commit real values.
 | `AUTHZ_SERVER_ADDR` | `host:port` of `epic-lore-authz`'s gRPC listener, for login |
 | `SESSION_SECRET` | encryption key for the session cookie; required when `LORE_BACKEND=grpc` |
 | `COOKIE_SECURE` | whether auth cookies require HTTPS (default `true`; a local plain-HTTP demo stack must set this `false`) |
+| `GROUPS_CLAIM` | JWT claim name read for group membership on login (default `groups`) |
+| `PROFILE_GROUPS_ARTIST` | comma-separated group names that default a user to the Artist profile |
+| `PROFILE_GROUPS_DEVELOPER` | comma-separated group names that default a user to the Developer profile (wins if a user is in both lists) |
+| `FIXTURE_GROUPS` | comma-separated fake group names for the fixture auth path, so group-based default-profile resolution is testable with no real IdP |
 
 ## Dev quickstart
 

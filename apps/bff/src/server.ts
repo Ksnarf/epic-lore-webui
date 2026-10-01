@@ -73,7 +73,13 @@ export async function buildServer() {
   // gated on LORE_BACKEND, so a real login can be exercised in fixture mode
   // too (see ./config.ts's authzServerAddr doc comment).
   const authz = createAuthzClient(config.authzServerAddr);
-  registerAuthRoutes(app, authz, config.sessionSecret, config.cookieSecure);
+  registerAuthRoutes(app, authz, config.sessionSecret, config.cookieSecure, {
+    groupsClaim: config.groupsClaim,
+    profileGroupsArtist: config.profileGroupsArtist,
+    profileGroupsDeveloper: config.profileGroupsDeveloper,
+    loreBackend: config.loreBackend,
+    fixtureGroups: config.fixtureGroups,
+  });
 
   // Auth gate + per-request auth context, both in one hook: every request
   // gets `request.auth` (../auth/request-context.ts) built from whatever

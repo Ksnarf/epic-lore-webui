@@ -38,6 +38,21 @@ export interface SessionPayload {
   userName: string;
   /** `UserToken.expires_at`, epoch ms -- a session past this is treated as absent, not just "expiring soon". */
   expiresAt: number;
+  /**
+   * v1 task 11 extension (group-membership default profile). The group
+   * names extracted from this session's `userToken` JWT payload at login
+   * time (../auth/jwt-claims.ts's `extractGroupsClaim`), under whichever
+   * claim name `GROUPS_CLAIM` (../config.ts) names. Optional and typically
+   * absent/empty -- today's real authz tokens carry no such claim at all,
+   * and that is the expected, inert case (groups are optional everywhere
+   * per this task's brief), not a degraded one. Never sent to the browser
+   * (see ../routes/auth.ts's doc comment) -- only used server-side to
+   * resolve `AuthStatusResponseBody.defaultProfile` (../auth/profile-mapping.ts)
+   * on each `/api/auth/status` call, so a mapping-config change
+   * (`PROFILE_GROUPS_ARTIST`/`PROFILE_GROUPS_DEVELOPER`) takes effect
+   * without forcing a re-login.
+   */
+  groups?: string[];
 }
 
 export interface LoginAttemptPayload {

@@ -53,6 +53,50 @@ export interface BffConfig {
    * real deployment forgetting to turn it on.
    */
   cookieSecure: boolean;
+  /**
+   * v1 task 11 extension (group-membership default profile, built
+   * path-agnostically -- see apps/bff/src/auth/jwt-claims.ts's doc comment).
+   * The claim name read off the session's `UserToken` JWT payload. Default
+   * `"groups"`. Configurable because neither path this BFF must support
+   * (a future authz-minted claim, or a native Okta/OIDC token) is
+   * guaranteed to use that exact name.
+   */
+  groupsClaim: string;
+  /**
+   * v1 task 11 extension. Group names (comma-separated, trimmed, empty
+   * entries dropped) that resolve to the "artist" default profile
+   * (apps/bff/src/auth/profile-mapping.ts). Names only, never secrets --
+   * see ./auth/profile-mapping.ts for the resolution rule (developer wins
+   * if a user is in both lists). Default empty: no mapping configured means
+   * no group ever resolves to a default, matching this task's "groups are
+   * optional everywhere" constraint.
+   */
+  profileGroupsArtist: string[];
+  /** v1 task 11 extension. See `profileGroupsArtist` -- same shape, resolves to "developer". */
+  profileGroupsDeveloper: string[];
+  /**
+   * v1 task 11 extension. Comma-separated fake group names the FIXTURE auth
+   * path (../routes/auth.ts) reports for its synthetic signed-in user, so
+   * the whole claim-extraction -> mapping -> `defaultProfile` chain is
+   * testable with zero real IdP/authz reachable. Only takes effect when
+   * `loreBackend` is `"fixture"` AND this is non-empty -- an unset/empty
+   * value leaves fixture mode's `/api/auth/status` exactly as it behaved
+   * before this task (`{authenticated:false}` with no cookies), so this is
+   * opt-in, not a behavior change for existing fixture-mode use. Default
+   * empty.
+   */
+  fixtureGroups: string[];
+}
+
+/** Comma-separated env var -> trimmed, non-empty group-name list. Shared by `PROFILE_GROUPS_ARTIST`/`PROFILE_GROUPS_DEVELOPER`/`FIXTURE_GROUPS` below. */
+function parseGroupList(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }
 
 const VALID_BACKENDS: readonly LoreBackendKind[] = ["fixture", "grpc"];
@@ -75,6 +119,10 @@ function isLoreBackendKind(value: string): value is LoreBackendKind {
  * | `AUTHZ_SERVER_ADDR`  | `localhost:8443`   | `epic-lore-authz` gRPC `host:port` (task 8)  |
  * | `SESSION_SECRET`     | (required, `grpc`) | session-cookie encryption key (name only)    |
  * | `COOKIE_SECURE`      | `true`             | `Secure` attribute on auth cookies (task 8)  |
+ * | `GROUPS_CLAIM`       | `groups`           | JWT claim name read for group membership (task 11 ext) |
+ * | `PROFILE_GROUPS_ARTIST`    | (empty)      | comma-separated group names -> "artist" default (task 11 ext) |
+ * | `PROFILE_GROUPS_DEVELOPER` | (empty)      | comma-separated group names -> "developer" default (task 11 ext) |
+ * | `FIXTURE_GROUPS`     | (empty)            | comma-separated fake groups for the fixture auth path (task 11 ext) |
  */
 export function loadConfig(): BffConfig {
   const rawBackend = process.env.LORE_BACKEND ?? "fixture";
@@ -106,5 +154,9 @@ export function loadConfig(): BffConfig {
     // material, just ephemeral and never logged.
     sessionSecret: sessionSecret ?? randomBytes(32).toString("base64url"),
     cookieSecure: process.env.COOKIE_SECURE !== "false",
+    groupsClaim: process.env.GROUPS_CLAIM || "groups",
+    profileGroupsArtist: parseGroupList(process.env.PROFILE_GROUPS_ARTIST),
+    profileGroupsDeveloper: parseGroupList(process.env.PROFILE_GROUPS_DEVELOPER),
+    fixtureGroups: parseGroupList(process.env.FIXTURE_GROUPS),
   };
 }

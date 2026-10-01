@@ -1152,3 +1152,179 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       branch list itself, `branch-tree.tsx`'s non-file-tree chrome) --
       the checks above targeted the specific hide/demote/elevate claims
       made in this entry, not an exhaustive click-every-pixel pass.
+
+- [x] [verified-e2e] 11a. Task 11 extension: tie the DEFAULT profile to the
+      user's AD-group membership (Okta), built PATH-AGNOSTICALLY -- works
+      whether group names eventually arrive via a future authz-minted
+      `UserToken` claim (Path A, requirements already sent to the authz
+      team, see log.log) or a native Okta/OIDC token directly (Path B
+      native migration). Groups are OPTIONAL EVERYWHERE: absent groups ->
+      no group default, feature silently inert -- proven, not just
+      asserted (see evidence below).
+
+      **Why this is path-agnostic:** the only thing this BFF reads is a
+      `groups` claim (configurable name) off the session's `UserToken` JWT
+      PAYLOAD (`apps/bff/src/auth/jwt-claims.ts`'s `extractGroupsClaim`) --
+      it does not care whether that JWT was minted by `epic-lore-authz`
+      (today) or, post-migration, issued directly by an OIDC provider. The
+      one deliberate choice this makes, stated precisely: it decodes the
+      payload WITHOUT verifying the signature, because today the only
+      token it is ever called on arrives over the already-trusted authz
+      gRPC channel (`GetAuthSession`) -- this is documented as a trust
+      boundary in `jwt-claims.ts`'s doc comment and must not be copied
+      as-is onto a path where the token arrives over an untrusted channel
+      (e.g. straight from the browser) without adding real signature
+      verification first.
+
+      **Built:**
+      - `apps/bff/src/auth/jwt-claims.ts` (new): `extractGroupsClaim(jwt,
+        claimName)` -- decode-only JWT payload claim read, `string[]`,
+        empty on anything malformed/absent/wrong-shaped. 8 vitest cases
+        (valid claim, configurable claim name, absent claim, non-array
+        claim, mixed-type array filtered to strings only, non-JWT input,
+        malformed base64/JSON payload, non-object JSON payload).
+      - `apps/bff/src/auth/profile-mapping.ts` (new): `resolveDefaultProfile(groups,
+        artistGroups, developerGroups)` -- pure resolution, developer wins
+        on both, `null` when neither/no groups/no mapping configured. 7
+        vitest cases incl. the both-groups precedence and the
+        no-mapping-configured case.
+      - `apps/bff/src/config.ts`: `GROUPS_CLAIM` (default `groups`),
+        `PROFILE_GROUPS_ARTIST`/`PROFILE_GROUPS_DEVELOPER` (comma-separated
+        group names, names only), `FIXTURE_GROUPS` (comma-separated, names
+        only) -- all parsed by a shared `parseGroupList` (trim, drop empty
+        entries).
+      - `apps/bff/src/auth/session.ts`: `SessionPayload.groups?: string[]`
+        -- optional, stored encrypted alongside the token, never sent to
+        the browser.
+      - `apps/bff/src/routes/auth.ts`: on every `GetAuthSession` resolution
+        (both a fresh login and -- for symmetry -- a re-poll of an
+        already-established session), decodes the groups claim and stores
+        it in the session; `GET /api/auth/status` now resolves
+        `defaultProfile` from `session.groups` on every call (not just
+        once at login), so a `PROFILE_GROUPS_*` config change takes effect
+        without forcing a re-login. **Deliberate choice: the raw group
+        list itself is never exposed to the browser** -- only the resolved
+        `defaultProfile` is, per this task's own instruction to default to
+        not exposing it. Also added the **fixture auth path**: when
+        `LORE_BACKEND=fixture` AND `FIXTURE_GROUPS` is actually set (both
+        conditions) AND there is no real session/login-attempt cookie,
+        `/api/auth/status` returns a synthetic authenticated fixture user
+        with `FIXTURE_GROUPS` as its groups -- opt-in only, so fixture
+        mode's behavior is byte-for-byte unchanged
+        (`{"authenticated":false}` with no cookies) when `FIXTURE_GROUPS`
+        is unset, matching "groups optional everywhere, feature silently
+        inert" for the one env var that is itself optional-by-design.
+      - `packages/api-types/src/auth.ts`: new `DefaultProfileDto =
+        "developer" | "artist" | null`; `AuthStatusResponseBody` gains
+        `defaultProfile?: DefaultProfileDto`, present only when
+        `authenticated: true`.
+      - `apps/web/src/profile/resolve-profile.ts` (new): pure
+        `resolveEffectiveProfile({explicit, serverDefault, fallback})` --
+        the three-state rule (explicit user choice > server default >
+        today's plain fallback). 5 vitest cases incl. explicit winning
+        over a server default both directions, and a `null` server default
+        falling through to fallback without erroring.
+      - `apps/web/src/store/ui-store.ts`: `profile` is no longer a single
+        persisted value -- `explicitProfile` (set ONLY by `setProfile`,
+        i.e. a real `ProfileToggle` click) is the only thing persisted
+        (`localStorage`, bumped to persist `version: 1` with a `migrate`
+        that treats any pre-this-extension persisted shape as "no explicit
+        choice recorded" -- see the store's own doc comment for why that
+        old value can't be trusted as a real user choice); `serverDefaultProfile`
+        (set ONLY by the new `applyServerDefaultProfile` action, from
+        `GET /api/auth/status`) is NOT persisted -- re-derived every
+        session; the resolved `profile` field every existing
+        profile-aware component already reads is recomputed by both
+        actions via `resolveEffectiveProfile`, so no consumer needed to
+        change. A custom `merge` recomputes `profile` on rehydration too,
+        so a returning user with a real explicit choice sees it
+        immediately on load.
+      - `apps/web/src/components/page-shell.tsx`: new `ProfileDefaultSync`
+        (renders nothing), mounted once alongside the existing
+        `AuthIndicator`/`ProfileToggle` -- pushes
+        `useAuthStatusQuery`'s `defaultProfile` into
+        `applyServerDefaultProfile` whenever it changes (that action itself
+        no-ops on an unchanged value, so the 30s background poll doesn't
+        thrash the store).
+
+      No BFF route/DTO change beyond the one new `defaultProfile` field;
+      no new routes; no new npm dependency on either side.
+
+      Evidence (real commands, run 2026-10-01):
+      - `pnpm -r run typecheck`/`lint`/`build`: all exit 0 across all 4
+        buildable workspaces.
+      - `pnpm --filter @epic-lore-webui/bff run test`: 26/26 pass (15 new:
+        8 `jwt-claims.test.ts` + 7 `profile-mapping.test.ts`; existing
+        `crypto`/`session` suites unaffected).
+      - `pnpm --filter @epic-lore-webui/web run test`: 45/45 pass (5 new
+        `resolve-profile.test.ts`; all 40 pre-existing suites unaffected).
+      - **Fixture-mode e2e, exactly per this task's validation brief:**
+        booted the real BFF (`PORT=3501 LORE_BACKEND=fixture
+        FIXTURE_GROUPS="design-team" PROFILE_GROUPS_ARTIST="design-team"
+        PROFILE_GROUPS_DEVELOPER="tools-team"`) and curled
+        `GET /api/auth/status` -> `{"authenticated":true,"userId":
+        "fixture-user","userName":"Fixture User","defaultProfile":"artist"}`
+        -- the exact outcome the brief asked to prove. Process killed,
+        confirmed dead (`ps` empty, follow-up curl connection-refused).
+        Also proved, same mechanism: both-groups-configured ->
+        `defaultProfile:"developer"` (developer-wins precedence, live, not
+        just unit-tested) on a second boot (port 3502, killed/confirmed
+        dead); and, critically, **`FIXTURE_GROUPS` unset ->
+        `{"authenticated":false}`**, byte-identical to this route's
+        pre-this-task behavior (port 3503, killed/confirmed dead) --
+        proving the feature is genuinely inert, not just defaulting to a
+        harmless value, when the operator hasn't opted in.
+      - **Real built-artifact verification, not just a curl check:** reused
+        a local Playwright Chromium already present in this session's
+        scratchpad (from task 11's own prior verification pass), booted
+        the real BFF serving the actual `apps/web/dist` production build
+        (`PORT=3504`, same `FIXTURE_GROUPS`/`PROFILE_GROUPS_ARTIST` as
+        above), and drove a real browser against it: 6/6 scripted checks
+        passed -- on a fresh load (empty `localStorage`) the Artist toggle
+        is active (server default honored, no explicit choice yet exists);
+        `localStorage`'s persisted `explicitProfile` is confirmed `null` at
+        that point (the server default did NOT get recorded as an
+        explicit choice -- directly proving this task's "must only be set
+        by a real user toggle action" constraint); clicking the Developer
+        toggle button for real DOES persist `explicitProfile:"developer"`;
+        reloading the page afterward shows Developer still active --
+        the explicit choice winning over the still-`"artist"` server
+        default, proving the three-state precedence end-to-end through the
+        built SPA, not just in the pure `resolve-profile.ts` unit tests.
+        Process killed, confirmed dead.
+      - **Real demo-stack validation (grpc mode), proven, not left
+        untested:** the brief said to attempt this "if time permits" --
+        it did. Booted the real BFF in `LORE_BACKEND=grpc` against the
+        same live `epic-lore-authz`+`lore-server` demo stack task 8
+        validated (already running, confirmed healthy, untouched
+        throughout), drove the REAL login flow end to end (`GET /login`
+        -> real `302` to `epic-lore-authz`'s `login_url` -> followed it
+        through the real Dex mock connector, `curl -L --resolve
+        host.docker.internal:5556:127.0.0.1`, exactly task 8's precedent
+        -> landed on `epic-lore-authz`'s own unmodified "you are signed
+        in" page), then polled `GET /api/auth/status` with the same
+        cookie jar: `{"authenticated":true,"userId":
+        "af862d98-e0b4-48df-bac2-fa6f8fcb064c","userName":"Kilgore
+        Trout","defaultProfile":null}` -- **the real authz token has no
+        groups claim today, and the whole chain degrades to `null`
+        gracefully, live, exactly as this task's brief predicted.** This
+        is the strongest evidence this feature is genuinely inert absent
+        groups: not a fixture assumption, a real signed token from a real
+        login flow, decoded for real, correctly yielding no default.
+        Process killed, confirmed dead (`ps` empty, connection-refused).
+        `epic-lore-authz` git status confirmed clean (no source touched);
+        demo stack confirmed still running, untouched.
+
+      **What is NOT provable yet, named honestly:** Path A itself (a real
+      authz-minted `groups` claim on a real `UserToken`) cannot be proven
+      live because `epic-lore-authz` does not mint one today -- that is
+      exactly the dependency this task's requirements doc was sent to the
+      authz team to close (log.log, 2026-10-01 14:40 PT entry). What IS
+      proven is every piece on this side of that dependency: claim
+      extraction from a well-formed JWT (unit), the mapping/precedence
+      rules (unit + live fixture), the browser-side three-state logic
+      (unit + live built-artifact), and the graceful real-world "no claim
+      yet" case (live, real demo stack). The moment authz ships a real
+      `groups` claim, no code here needs to change -- only this task's own
+      live-validation gap closes, by re-running the exact grpc-mode check
+      above against a token that actually carries the claim.

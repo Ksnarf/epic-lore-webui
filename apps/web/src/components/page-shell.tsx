@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
+import { useEffect } from "react";
 import { Link } from "react-router";
 import { ProfileToggle } from "./profile-toggle.js";
 import { useAuthStatusQuery } from "../queries/lore.js";
+import { useUiStore } from "../store/ui-store.js";
 
 interface PageShellProps {
   title: string;
@@ -34,10 +36,37 @@ function AuthIndicator() {
   );
 }
 
+/**
+ * v1 task 11 extension (group-membership default profile, built
+ * path-agnostically). Mounted once alongside `AuthIndicator` (same
+ * "present on every `PageShell`-based route, zero per-route wiring"
+ * convention `ProfileToggle` already uses). Renders nothing -- its only
+ * job is pushing `useAuthStatusQuery`'s `defaultProfile` into
+ * `../store/ui-store.ts`'s `applyServerDefaultProfile` whenever it
+ * changes, so the three-state resolution there
+ * (`../profile/resolve-profile.ts`) always has the latest server value to
+ * weigh against any explicit user choice. `applyServerDefaultProfile`
+ * itself no-ops when the value hasn't actually changed (see ui-store.ts),
+ * so this effect re-running on every 30s poll is harmless.
+ */
+function ProfileDefaultSync() {
+  const { data } = useAuthStatusQuery();
+  const applyServerDefaultProfile = useUiStore((state) => state.applyServerDefaultProfile);
+
+  useEffect(() => {
+    if (data) {
+      applyServerDefaultProfile(data.defaultProfile ?? null);
+    }
+  }, [data, applyServerDefaultProfile]);
+
+  return null;
+}
+
 /** Shared chrome for the browse views (task 1): a back link plus a heading. */
 export function PageShell({ title, backTo, backLabel, children }: PageShellProps) {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
+      <ProfileDefaultSync />
       <header className="flex items-start justify-between gap-4 border-b border-slate-800 px-6 py-4">
         <div className="min-w-0">
           {backTo && (
