@@ -26,7 +26,7 @@ export function BranchTreeRoute() {
   }
 
   return (
-    <PageShell title="File tree" backTo={`/repositories/${repositoryId}`} backLabel="Branches">
+    <PageShell title="File tree" backTo={`/repositories/${repositoryId}`} backLabel="Branches" repositoryId={repositoryId}>
       <Link
         to={`/repositories/${repositoryId}/branches/${branchId}/history`}
         className="mb-4 inline-block text-sm text-slate-400 hover:text-slate-200"

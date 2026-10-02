@@ -30,6 +30,13 @@ import {
   RevisionDiffHeaderSchema,
   RevisionTreeHeaderSchema,
 } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/thin_client_pb";
+import {
+  BranchPushedSchema,
+  EventSchema,
+  ResourceLockedSchema,
+  ResourceUnlockedSchema,
+  type Event,
+} from "@epic-lore-webui/lore-client/gen/lore_notification_pb";
 import { bytesEqual, filterBranchesForRepository } from "./branch-scope.js";
 import { ConflictError, NotFoundError } from "./errors.js";
 import { queryFixtureTree } from "./tree-query.js";
@@ -38,6 +45,7 @@ import type {
   ContentDiffResult,
   LockMutationParams,
   LoreBackend,
+  NotificationSubscribeParams,
   QueryLocksParams,
   RevisionDiffParams,
   RevisionDiffResult,
@@ -652,6 +660,123 @@ function resolveAnchorIndex(itemsDesc: Revision[], cursor: Uint8Array | undefine
   return index;
 }
 
+// --- v1 task 10 fixture notification stream --------------------------------
+//
+// `lore.notification.NotificationService.Subscribe` is server-streaming and,
+// per `lore_notification.proto` (no page/cursor/limit field anywhere on
+// `SubscribeRequest`), never completes on its own against a real server.
+// This fixture instead emits one fixed, deterministic, FINITE scripted
+// sequence per call -- enough to exercise the full BFF SSE relay
+// (../routes/notifications.ts) and the web app's event-to-query-invalidation
+// mapping (apps/web/src/notifications/query-invalidation.ts) with
+// `curl -N`/a browser and no real `lore-server` reachable -- then ends,
+// so the route's own stream-end path and `EventSource`'s native reconnect
+// are both exercisable offline too (a real subscription would just sit idle
+// between real events; this fixture's finite-then-ending behavior is a
+// deliberate fixture simplification of that, not a proven real-server
+// shape). Reuses this file's own `BRANCH_LORE_MAIN_ID`/`loreMainChain`/
+// `FIXTURE_LOCK_OWNER` fixture data rather than inventing a parallel set, so
+// a curl of this route can be cross-checked against the same branch/lock
+// fixtures every other route in this file already serves.
+
+/**
+ * Resolves after `ms`, or rejects immediately/early if `signal` aborts first
+ * -- and clears its own timer either way. This is what lets a client
+ * disconnecting mid-sequence be proven to leave no dangling timer behind
+ * (this task's own teardown requirement), rather than the delay firing into
+ * a generator nobody is consuming anymore.
+ */
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason ?? new Error("aborted"));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(signal.reason ?? new Error("aborted"));
+      },
+      { once: true },
+    );
+  });
+}
+
+/** The one resource this fixture's scripted sequence locks then unlocks -- a real fixture `Resource` (`create(ResourceSchema, ...)`), not an invented literal. */
+const FIXTURE_NOTIFICATION_LOCK_RESOURCE = create(ResourceSchema, {
+  branch: BRANCH_LORE_MAIN_ID,
+  hash: fixtureHash(9500),
+  description: "docs/README.md",
+});
+
+function fixtureNotificationEvent(fields: {
+  id: string;
+  offsetMs: bigint;
+  repository: Uint8Array;
+  event: Event["event"];
+}): Event {
+  return create(EventSchema, {
+    id: fields.id,
+    time: timestampFromMs(Number(FIXTURE_CREATED_MS + fields.offsetMs)),
+    repository: fields.repository,
+    event: fields.event,
+  });
+}
+
+/**
+ * The exact "lock acquired/released, revision pushed" example tasks.md task
+ * 10 names, in that order, 300ms apart (long enough for a human `curl -N` to
+ * see each frame arrive separately, short enough not to make a test wait
+ * meaningfully). `BranchPushed` reports `loreMainChain`'s real tip (the
+ * task-2 merge revision) -- an actual fixture revision, not a fabricated one.
+ */
+async function* fixtureNotificationSequence(repositoryId: Uint8Array, signal: AbortSignal): AsyncIterable<Event> {
+  yield fixtureNotificationEvent({
+    id: "fixture-notification-1",
+    offsetMs: 100n * 3_600_000n,
+    repository: repositoryId,
+    event: {
+      case: "resourceLocked",
+      value: create(ResourceLockedSchema, {
+        userId: FIXTURE_LOCK_OWNER,
+        resources: [FIXTURE_NOTIFICATION_LOCK_RESOURCE],
+      }),
+    },
+  });
+  await delay(300, signal);
+
+  yield fixtureNotificationEvent({
+    id: "fixture-notification-2",
+    offsetMs: 101n * 3_600_000n,
+    repository: repositoryId,
+    event: {
+      case: "branchPushed",
+      value: create(BranchPushedSchema, {
+        revision: loreMainChain[0]!.signature,
+        revisionNumber: loreMainChain[0]!.number,
+        branch: BRANCH_LORE_MAIN_ID,
+        userId: FIXTURE_LOCK_OWNER,
+      }),
+    },
+  });
+  await delay(300, signal);
+
+  yield fixtureNotificationEvent({
+    id: "fixture-notification-3",
+    offsetMs: 102n * 3_600_000n,
+    repository: repositoryId,
+    event: {
+      case: "resourceUnlocked",
+      value: create(ResourceUnlockedSchema, {
+        userId: FIXTURE_LOCK_OWNER,
+        resources: [FIXTURE_NOTIFICATION_LOCK_RESOURCE],
+      }),
+    },
+  });
+}
+
 export function createFixtureBackend(): LoreBackend {
   return {
     async listRepositories(): Promise<Repository[]> {
@@ -788,6 +913,14 @@ export function createFixtureBackend(): LoreBackend {
         throw new NotFoundError(`fixture: no content diff for address pair ${key}`);
       }
       return entry;
+    },
+
+    async *subscribeToNotifications(params: NotificationSubscribeParams, signal: AbortSignal): AsyncIterable<Event> {
+      const repository = repositories.find((candidate) => bytesEqual(candidate.id, params.repositoryId));
+      if (!repository) {
+        throw new NotFoundError(`fixture: no repository for id ${hexKey(params.repositoryId)}`);
+      }
+      yield* fixtureNotificationSequence(params.repositoryId, signal);
     },
   };
 }

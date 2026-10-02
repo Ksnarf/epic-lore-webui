@@ -19,6 +19,7 @@ export function RepositoryBranchesRoute() {
       title={repositoryQuery.data?.repository.name ?? repositoryId}
       backTo="/"
       backLabel="All repositories"
+      repositoryId={repositoryId}
     >
       {profile === "artist" ? (
         // "Locks ... front and center" (this task's brief): surfaced as a

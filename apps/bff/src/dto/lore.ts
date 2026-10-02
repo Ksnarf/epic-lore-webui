@@ -9,6 +9,7 @@ import type {
   DiffPartitionDto,
   LockDto,
   LockResourceDto,
+  NotificationEventDto,
   RepositorySummary,
   RevisionDiffHeaderDto,
   RevisionDto,
@@ -18,6 +19,7 @@ import type {
   TreeNodeDto,
 } from "@epic-lore-webui/api-types";
 import type { Lock, Resource } from "@epic-lore-webui/lore-client/gen/lock_pb";
+import type { Event } from "@epic-lore-webui/lore-client/gen/lore_notification_pb";
 import type { Branch, RevisionIdentifier, RevisionItem, Repository } from "@epic-lore-webui/lore-client/gen/lore/model/v1/model_pb";
 import {
   Action,
@@ -240,4 +242,59 @@ export function toContentDiffResponseBody(header: ContentDiffHeader, diff: strin
     conflictCount: header.conflictCount,
     diff,
   };
+}
+
+// --- v1 task 10 (live notifications) ---------------------------------------
+
+/**
+ * Converts a gRPC `lore.notification.Event` to the BFF's JSON/SSE contract,
+ * flattening `Event`'s `oneof event` into one `kind`-discriminated shape --
+ * see `packages/api-types/src/notification.ts`'s top comment for why
+ * `obliterate`/`other` carry no extra fields (no consuming UI feature exists
+ * for either in this task's surgical scope).
+ */
+export function toNotificationEventDto(event: Event): NotificationEventDto {
+  const base = {
+    id: event.id,
+    time: event.time ? String(timestampMs(event.time)) : "0",
+    repositoryId: encodeHexBytes(event.repository),
+  };
+  switch (event.event.case) {
+    case "branchCreated":
+      return { ...base, kind: "branchCreated", branchId: encodeHexBytes(event.event.value.branch) };
+    case "branchPushed":
+      return {
+        ...base,
+        kind: "branchPushed",
+        branchId: encodeHexBytes(event.event.value.branch),
+        revisionNumber: String(event.event.value.revisionNumber),
+        userId: event.event.value.userId,
+      };
+    case "branchDeleted":
+      return { ...base, kind: "branchDeleted", branchId: encodeHexBytes(event.event.value.branch) };
+    case "resourceLocked":
+      return {
+        ...base,
+        kind: "resourceLocked",
+        userId: event.event.value.userId,
+        resources: event.event.value.resources.map(toLockResourceDto),
+      };
+    case "resourceUnlocked":
+      return {
+        ...base,
+        kind: "resourceUnlocked",
+        userId: event.event.value.userId,
+        resources: event.event.value.resources.map(toLockResourceDto),
+      };
+    case "obliterate":
+      return { ...base, kind: "obliterate" };
+    case "other":
+      return { ...base, kind: "other", extensionType: event.event.value.type };
+    case undefined:
+      // Proto3 oneof with no case set -- not expected from a real server
+      // (every `Event` on the wire should carry one of the above), but
+      // mapped to an honest "other" rather than throwing, so one malformed
+      // frame doesn't take down the whole SSE relay.
+      return { ...base, kind: "other" };
+  }
 }

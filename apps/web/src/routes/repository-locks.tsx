@@ -79,7 +79,7 @@ export function RepositoryLocksRoute() {
   }
 
   return (
-    <PageShell title="Locks" backTo={`/repositories/${repositoryId}`} backLabel="Branches">
+    <PageShell title="Locks" backTo={`/repositories/${repositoryId}`} backLabel="Branches" repositoryId={repositoryId}>
       {profile === "developer" ? (
         <form onSubmit={handleAcquire} className="mb-6 flex flex-wrap items-end gap-3 rounded border border-slate-800 p-4">
           <label className="flex flex-col text-xs text-slate-400">

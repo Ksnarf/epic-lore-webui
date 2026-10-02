@@ -62,6 +62,7 @@ export function RevisionDiffRoute() {
       title={`Diff: revision ${from} → ${to}`}
       backTo={`/repositories/${repositoryId}/branches/${branchId}/history`}
       backLabel="History"
+      repositoryId={repositoryId}
     >
       {diffQuery.isLoading && <p className="text-sm text-slate-400">Loading diff...</p>}
       {diffQuery.error && (

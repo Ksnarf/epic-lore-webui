@@ -1147,15 +1147,188 @@ evidence logged), `[code-says]` (code exists / builds, not run end-to-end),
       - No principal/group/resource/grant management (create/suspend/
         delete) was built -- this task's brief was "view," and the BFF
         proxy here issues only `GET`s against `/admin/v1/**`.
-- [ ] 10. Live notifications via `lore.notification.NotificationService`
-      (corrected from `urc.notification`: API contract study,
-      `docs/design/api-contract.md` section 1 feature 10, confirms
-      `lore-server`'s live gRPC handler implements the `lore.notification`
-      package from `lore_notification.proto`, not the legacy
-      `urc.notification` package from `notification.proto`). Server-streaming
-      only, scoped per-repository -- grpc-web-compatible if that transport
-      were chosen, and straightforwardly proxyable by the BFF (recommended
-      transport, see pre-work stack decision) via SSE/WebSocket.
+- [x] [verified-e2e] 10. Live notifications via
+      `lore.notification.NotificationService` (corrected from
+      `urc.notification`: API contract study, `docs/design/api-contract.md`
+      section 1 feature 10, confirms `lore-server`'s live gRPC handler
+      implements the `lore.notification` package from `lore_notification.proto`,
+      not the legacy `urc.notification` package from `notification.proto`).
+      Server-streaming only, scoped per-repository. Implemented per
+      `docs/design/stack-decision.md`'s "Streaming (task 10)" ruling: SSE,
+      not WebSocket.
+
+      **Built:** BFF route `GET
+      /api/repositories/:repositoryId/notifications/stream`
+      (`apps/bff/src/routes/notifications.ts`), one SSE connection per call.
+      `LoreBackend` (`apps/bff/src/backend/types.ts`) extended with
+      `subscribeToNotifications(params, signal, authToken)` -- `signal` is a
+      required, non-trailing `AbortSignal` (unlike every other method's
+      trailing-optional-`authToken` shape), because a subscription with no
+      way to be cancelled would leak a server-side gRPC stream or a
+      dangling fixture timer for every browser tab that closes without a
+      clean `EventSource.close()`. `backend/grpc.ts` opens a real
+      `NotificationService.Subscribe` stream, `repositoryHeaders()` metadata
+      reused from every other repository-scoped RPC, the route's
+      `AbortSignal` passed straight into `@connectrpc/connect-node`'s call
+      options so a client disconnect actually tears down the gRPC stream.
+      `backend/fixture.ts` emits a deterministic, finite 3-event scripted
+      sequence (the exact "lock acquired/released, revision pushed" example
+      this task names: `resourceLocked` -> `branchPushed` -> `resourceUnlocked`,
+      300ms apart, built with real `create(EventSchema, {...})` constructors
+      reusing this file's own branch/lock fixture data) then ends, exercising
+      the route's stream-end path and the browser's native `EventSource`
+      reconnect with no real server reachable. New
+      `packages/api-types/src/notification.ts`:
+      `NotificationEventKind`/`NotificationEventDto` (the proto's `oneof`
+      flattened to one `kind`-discriminated shape; `obliterate`/`other`
+      carry no extra fields -- no consuming UI feature for either exists in
+      this task's surgical scope). `apps/bff/src/dto/lore.ts` grew
+      `toNotificationEventDto`. The route: resolves the repository first (a
+      normal JSON 404/400 via the existing `handleRouteError` path, before
+      anything is hijacked), then `writeHead(200, text/event-stream)` +
+      `reply.hijack()`, an `AbortController` wired to `request.raw`'s
+      `close` event (client-disconnect teardown), a 15s heartbeat comment,
+      each backend event written as an `event: notification` SSE frame, and
+      an `event: stream-end`/`event: stream-error` frame on natural
+      end/error (swallowed if the signal was already aborted -- that's a
+      clean client-initiated close, not a server error) before the response
+      is ended in a `finally`. No subscription registry/multiplexing: each
+      call is independent and stateless, so a reconnect just re-subscribes
+      fresh -- the "make the route resumable-safe" requirement.
+      Session-authenticated for free: `server.ts`'s existing `onRequest`
+      hook already 401s every unauthenticated `/api/*` call in `grpc` mode
+      before this handler runs (this route matches `/api/*`, nothing
+      exempts it); no new auth code needed. No new env vars.
+
+      Web: `apps/web/src/notifications/query-invalidation.ts` (pure,
+      unit-tested) maps one `NotificationEventDto` to the TanStack Query
+      cache keys `apps/web/src/queries/lore.ts`'s hooks already use --
+      `resourceLocked`/`resourceUnlocked` invalidate `["locks",
+      repositoryId]`, `branchPushed` invalidates `["revisions", repositoryId,
+      branchId]` plus `["branches", repositoryId]`,
+      `branchCreated`/`branchDeleted` invalidate `["branches", repositoryId]`,
+      `obliterate`/`other` invalidate nothing (no consuming view). 8 passing
+      vitest unit tests. `apps/web/src/notifications/use-notifications.ts`:
+      `useRepositoryNotifications(repositoryId)`, the actual `EventSource`
+      wiring (opens on mount, closes on unmount/`repositoryId` change,
+      invalidates via the pure mapping above, returns a
+      `connecting`/`open`/`closed` state) -- reconnection is the browser's
+      own native `EventSource` retry, per this task's brief, not
+      reimplemented here. `apps/web/src/components/page-shell.tsx` grew an
+      optional `repositoryId` prop; when given, mounts a new
+      `NotificationIndicator` (a small colored dot + a `title` tooltip/
+      `sr-only` label reflecting the connection state, deliberately the
+      SAME wording in both profiles -- unlike a revision signature or raw
+      content hash, "connecting/live/disconnected" carries no technical
+      detail either profile's own convention calls for hiding) in the
+      header next to `PermissionsNav`/`ProfileToggle`. The five
+      repository-scoped routes that already had `repositoryId` in scope
+      (`repository-branches.tsx`, `repository-locks.tsx`,
+      `branch-tree.tsx`, `branch-history.tsx`, `revision-diff.tsx`) each
+      gained one `repositoryId={repositoryId}` prop on their `<PageShell>`
+      call -- no other change to any of them. No notification-center UI, no
+      new npm dependency on either side.
+
+      Evidence (real commands, run 2026-10-01):
+      - `pnpm -r run typecheck`/`lint`/`build`: all exit 0 across all 4
+        buildable workspaces.
+      - `pnpm --filter @epic-lore-webui/bff run test`: 31/31 pass,
+        unaffected (this task's BFF-side logic has no pure-function surface
+        beyond the DTO mapper, which is exercised by the fixture/live
+        checks below rather than a unit test -- `toNotificationEventDto` is
+        a thin, exhaustively-typed switch with no branching logic of its
+        own to unit-test beyond what TypeScript's exhaustiveness check
+        already guarantees).
+      - `pnpm --filter @epic-lore-webui/web run test`: 65/65 pass (57
+        pre-existing + 8 new `notifications/query-invalidation.test.ts`).
+      - Fixture mode (`PORT=3701 LORE_BACKEND=fixture`): curled the route
+        directly (`curl -N`) -- the 3 scripted events arrived in order with
+        correct hex/decimal fields, then `event: stream-end`, clean close.
+        Error paths before any header is written: unknown repository ->
+        `404`; malformed hex -> `400`. **Teardown proof:** 3 disconnect-mid-
+        stream cycles (`curl` killed with `-9` ~100-150ms in, mid-`delay()`)
+        left the BFF process's `lsof` fd/tcp-connection counts unchanged
+        (114 total / 1 tcp, before and after), no error/warn lines in the
+        BFF's own log, `/healthz` still answered afterward -- clean
+        teardown, no leaked stream or timer. Process killed and confirmed
+        dead (`ps` empty, `curl` connection-refused).
+      - **Real interactive Playwright check** (reused the session's
+        existing scratchpad Chromium, `playwright@1.63.0`, `PORT=3710
+        LORE_BACKEND=fixture` serving the actual `apps/web/dist` production
+        build): 7/7 scripted checks passed against a real browser's actual
+        network timeline, not just a curl -- the indicator reaches a real
+        "connected" state; the 3 scripted events drove real `GET` refetches
+        of `/locks` and `/branches` via `TanStack`'s `invalidateQueries`
+        (not just asserted by unit test); the fixture stream ended cleanly
+        and the browser's **native `EventSource` auto-reconnected** (~3s
+        default retry) -- the new connection got a genuinely fresh scripted
+        sequence (not stuck/replayed), proving the "stateless, re-subscribe
+        fresh" design end to end in an actual browser; zero console errors
+        across the whole run.
+
+      **Real demo-stack validation, 2026-10-01** (same live demo stack
+      tasks 1/2/3/5/8/9/11a used, already running, read-only -- no
+      `docker compose` restarts, no `epic-lore-authz` source touched,
+      confirmed via `git status --short` showing only pre-existing,
+      unrelated dirty files from another session's active work, untouched
+      by this one). This repo's own vendored `lore_notification.proto` plus
+      the legacy `model.proto` it imports were `docker cp`'d verbatim into
+      the demo's `tools` container (its base image had neither -- same
+      precedent as tasks 3/5's proto copies; no `epic-lore-authz` file
+      edited).
+
+      **Central open question this task's brief flagged as unknown --
+      answered, not left unknown: this build's `lore-server` DOES emit real
+      notification events.** Proven via `grpcurl` first (before any BFF
+      code ran against it): `Subscribe` needs the identical
+      `repositoryHeaders()` metadata every other repository-scoped RPC on
+      this server does (`PermissionDenied: Unauthorized` without it,
+      succeeds -- blocks waiting for an event, `DeadlineExceeded` after an
+      idle timeout -- once attached); a real `LockService.Lock` then
+      `Unlock` against the demo's seeded repository
+      (`urc-0194b726b34e72b0b45550b88a967076`) produced, within the same
+      live `Subscribe` stream, a real `resourceLocked` then `resourceUnlocked`
+      `Event`, correct `user_id`/`branch`/`hash`, within roughly 100ms of
+      each call.
+
+      **Then proven through the actual BFF HTTP routes, the full chain the
+      brief asks for:** booted the BFF in `LORE_BACKEND=grpc`
+      (`SESSION_SECRET` set, `COOKIE_SECURE=false`), ran the real login flow
+      end to end (`GET /login` -> real `302` to `epic-lore-authz`'s
+      `login_url` -> followed through the real Dex mock connector -> `GET
+      /api/auth/status` returned a real session for the same demo user
+      prior tasks used, `af862d98-...` "Kilgore Trout"), then `curl -N`'d
+      the new SSE route with that real session cookie while concurrently
+      `POST`ing then `DELETE`ing a real lock via the BFF's own `/api/
+      repositories/:id/locks` routes (permitted write, this repo's own
+      feature surface, per this task's validation brief) -- the SSE stream
+      showed both real notification frames (`resourceLocked` then
+      `resourceUnlocked`) with correct hex `repositoryId`/`branchId`/`hash`
+      and the real logged-in user's real id, proving the full
+      `lore-server` -> gRPC -> SSE -> client chain end to end, not just at
+      the gRPC layer. Also confirmed: an unauthenticated `GET` on the SSE
+      route returns a real `401` (both before any login and again after
+      `GET /logout`, cookies cleared). BFF process killed and confirmed
+      dead (`ps`/`lsof` empty, `curl` connection-refused). Demo stack
+      confirmed still running/healthy afterward; the one real lock created
+      during this test was released within the same test run, nothing left
+      dangling.
+
+      **What is NOT separately proven live, named honestly:** `branchPushed`
+      is proven only via the fixture scripted sequence and via the generic
+      live-`Subscribe` mechanism above (which *did* carry `BranchPushed` as
+      one of its real wire cases, confirmed against the live server's own
+      proto descriptor) -- not via an actual observed live `BranchPushed`
+      event, since manufacturing one needs a real revision push, which
+      needs real CAS content first (task 2's known, unrelated limitation:
+      `StorageService` is not vendored/reachable from any transport this
+      repo uses). `branchCreated`/`branchDeleted`/`obliterate`/`other` are
+      similarly unobserved live (no branch was created/deleted and no
+      `Obliterate`/extension event exists to trigger in this demo stack) --
+      their DTO mapping is exercised by `toNotificationEventDto`'s
+      exhaustive switch (TypeScript-checked, not independently unit-tested
+      beyond that) and, for `branchPushed` specifically, by the fixture's
+      scripted sequence end to end through the real route/web pipeline.
 - [x] [verified-e2e] 11. [ux] Dual profile: Developer view vs. Artist
       (simplified) view. API contract study (`docs/design/api-contract.md`
       section 11): "not an API concern -- UI-side view composition over the

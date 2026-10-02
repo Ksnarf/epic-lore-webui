@@ -70,6 +70,15 @@ connector, a real `lore-server`) -- not just built and code-read. See
   and a direct client call (the demo stack has no user holding that
   wildcard grant to prove it denying-then-allowing without writing to that
   stack's database). (task 9)
+- **Live notifications**: repository-scoped views subscribe to
+  `lore-server`'s live `lore.notification.NotificationService.Subscribe`
+  through a BFF-relayed SSE connection, invalidating the locks/branches/
+  revisions views automatically when a lock is acquired/released or a
+  branch changes, with a subtle connection indicator. Proven live, the full
+  chain: a real lock acquired and released through this project's own BFF
+  routes produced real notification events, observed arriving through the
+  actual SSE route with a real logged-in session -- `lore-server` ->
+  gRPC -> SSE -> browser, not just at the gRPC layer. (task 10)
 
 ### Built, but only fixture-verified so far (pending real server content)
 
@@ -118,18 +127,10 @@ against a real stack:
   content) needs `StorageService` RPCs that are bidirectional-streaming and
   cannot be driven from any browser transport, including grpc-web. This is
   an architectural limitation of the current API, not an unproven detail.
-- **Live notifications** are not built. The underlying
-  `lore.notification` streaming RPC exists and is straightforwardly
-  proxyable by the BFF; this is unbuilt v1 scope, not a server blocker.
 - **Okta-tile (IdP-initiated) login** is not built. Only the sign-in-from-
   this-app flow (SP-initiated) is built. Starting a session from an Okta
   tile needs a new acceptance path on `epic-lore-authz`'s own side, which is
   outside this project.
-
-### Not yet built (no server blocker)
-
-- **Dual profile view** (a simplified "Artist" view alongside the full
-  "Developer" view) has not been started. Nothing server-side blocks it.
 
 ## Status table
 
@@ -144,8 +145,8 @@ against a real stack:
 | 7 | Branch mgmt + conflict UI | Not started | resolution unreachable from any browser transport |
 | 8 | Okta login (SP-initiated) | Done, verified live | IdP-initiated tile entry not built |
 | 9 | Permissions view | Done, verified live | self-service proven live; admin view built, deny path + proxy reachability proven live, allow path fixture/direct-client only |
-| 10 | Live notifications | Not started | RPC exists, just not wired up yet |
-| 11 | Developer/Artist dual profile | Not started | no blocker |
+| 10 | Live notifications | Done, verified live | full lore-server -> gRPC -> SSE -> client chain proven with real lock events |
+| 11 | Developer/Artist dual profile | Done, verified live | |
 
 Full evidence for every row (commands run, exact responses) lives in
 `tasks.md`.
@@ -212,8 +213,9 @@ To run against a real stack, set `LORE_BACKEND=grpc` plus the `LORE_SERVER_ADDR`
   not a fork or reimplementation -- no source file in that project has been
   modified.
 - Not yet usable for change-request review, conflict resolution, asset
-  preview, permissions administration, or live notifications -- see
-  "Limitations" above.
+  preview, or permissions *administration* (creating/suspending/deleting
+  principals, resources, or grants -- the permissions *view* built in task 9
+  is read-only by design) -- see "Limitations" above.
 
 ## v1 scope
 
@@ -265,11 +267,12 @@ evidence for every claim above. In short, v1 targets:
 
 ## Status
 
-Three of eleven v1 features (repo browse, lock management, Okta login) are
+Six of eleven v1 features (repo browse, lock management, Okta login,
+permissions view, live notifications, Developer/Artist dual profile) are
 built and verified end-to-end against a real `epic-lore-authz` + `lore-server`
 stack. Two more (revision history, text diff) are fully built client-side and
 BFF-side but are currently limited by server-side gaps described above
 (unprovable pagination/merge cases, an unimplemented `ContentDiff` RPC). The
-remaining six are either blocked on server-side work that belongs to
+remaining three are either blocked on server-side work that belongs to
 Epic/upstream projects, or simply not yet started. See `tasks.md` for the
 authoritative, evidence-backed status of every item.

@@ -15,7 +15,9 @@ import type { FastifyInstance } from "fastify";
  *   - task 6: change-request review flow
  *   - task 7: branch management (read-only conflict display)
  *   - task 9: /api/admin/* proxy (see server.ts TODO)
- *   - task 10: SSE notifications (see server.ts TODO)
+ *
+ * task 10 (SSE notifications) is built -- see ../routes/notifications.ts,
+ * registered separately in server.ts, not under this placeholder router.
  */
 export function registerApiRoutes(app: FastifyInstance): void {
   app.get("/api/", async () => {

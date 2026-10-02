@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useEffect } from "react";
 import { Link } from "react-router";
 import { ProfileToggle } from "./profile-toggle.js";
+import { useRepositoryNotifications } from "../notifications/use-notifications.js";
 import { useAuthStatusQuery } from "../queries/lore.js";
 import { useUiStore } from "../store/ui-store.js";
 
@@ -9,6 +10,14 @@ interface PageShellProps {
   title: string;
   backTo?: string;
   backLabel?: string;
+  /**
+   * v1 task 10 (live notifications). When given, mounts a live-updates
+   * subscription (`NotificationIndicator` below) scoped to this repository.
+   * Omitted entirely for routes with no repository context (`/`,
+   * `/sign-in`, `/permissions`, `/admin/permissions`) -- there is nothing
+   * for a repository-scoped notification stream to subscribe to there.
+   */
+  repositoryId?: string;
   children: ReactNode;
 }
 
@@ -89,8 +98,37 @@ function PermissionsNav() {
   );
 }
 
+/**
+ * v1 task 10 (live notifications). A subtle presence-only indicator -- a
+ * small colored dot, no visible label -- reflecting
+ * `useRepositoryNotifications`'s connection state; the full explanation is a
+ * `title` tooltip plus an `sr-only` span for assistive tech, not inline
+ * text, so it never competes visually with the actual page content. The
+ * wording is deliberately the SAME in both profiles: unlike e.g. a revision
+ * signature or a raw content hash, "connecting/live/disconnected" carries no
+ * technical detail either profile's own convention (`../profile/format.ts`)
+ * calls for hiding.
+ */
+function NotificationIndicator({ repositoryId }: { repositoryId: string }) {
+  const state = useRepositoryNotifications(repositoryId);
+  const dotColor =
+    state === "open" ? "bg-emerald-500" : state === "connecting" ? "bg-amber-500" : "bg-slate-600";
+  const label =
+    state === "open"
+      ? "Live updates connected"
+      : state === "connecting"
+        ? "Connecting to live updates..."
+        : "Live updates disconnected";
+  return (
+    <span className="flex items-center gap-1.5" title={label}>
+      <span className={`h-1.5 w-1.5 rounded-full ${dotColor}`} aria-hidden="true" />
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
+
 /** Shared chrome for the browse views (task 1): a back link plus a heading. */
-export function PageShell({ title, backTo, backLabel, children }: PageShellProps) {
+export function PageShell({ title, backTo, backLabel, repositoryId, children }: PageShellProps) {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <ProfileDefaultSync />
@@ -105,6 +143,7 @@ export function PageShell({ title, backTo, backLabel, children }: PageShellProps
           <AuthIndicator />
         </div>
         <div className="flex items-center gap-4">
+          {repositoryId && <NotificationIndicator repositoryId={repositoryId} />}
           <PermissionsNav />
           <ProfileToggle />
         </div>

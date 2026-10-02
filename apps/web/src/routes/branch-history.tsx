@@ -54,6 +54,7 @@ export function BranchHistoryRoute() {
       title={focusBranch ? `${focusBranch.name} — History` : "History"}
       backTo={`/repositories/${repositoryId}/branches/${branchId}`}
       backLabel="File tree"
+      repositoryId={repositoryId}
     >
       {isLoading && !graph && <p className="text-sm text-slate-400">Loading history...</p>}
       {error && <p className="text-sm text-red-400">Failed to load history: {(error as Error).message}</p>}

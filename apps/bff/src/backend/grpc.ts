@@ -28,6 +28,11 @@ import {
   type Lock,
   type Resource,
 } from "@epic-lore-webui/lore-client/gen/lock_pb";
+import {
+  NotificationService,
+  SubscribeRequestSchema,
+  type Event,
+} from "@epic-lore-webui/lore-client/gen/lore_notification_pb";
 import { filterBranchesForRepository } from "./branch-scope.js";
 import { ForbiddenError, NotFoundError, UnauthorizedError } from "./errors.js";
 import type {
@@ -35,6 +40,7 @@ import type {
   ContentDiffResult,
   LockMutationParams,
   LoreBackend,
+  NotificationSubscribeParams,
   QueryLocksParams,
   RevisionDiffParams,
   RevisionDiffResult,
@@ -121,6 +127,7 @@ export function createGrpcBackend(addr: string): LoreBackend {
   const revisionClient = createClient(RevisionService, transport);
   const thinClient = createClient(ThinClientService, transport);
   const lockClient = createClient(LockService, transport);
+  const notificationClient = createClient(NotificationService, transport);
 
   return {
     async listRepositories(authToken?: string): Promise<Repository[]> {
@@ -435,6 +442,44 @@ export function createGrpcBackend(addr: string): LoreBackend {
         throw new NotFoundError("ContentDiff stream produced no header");
       }
       return { header, diff };
+    },
+
+    /**
+     * v1 task 10 (live notifications). `lore.notification.NotificationService.Subscribe`
+     * is server-streaming and never completes on its own (confirmed against
+     * `lore_notification.proto`'s own shape -- no page/cursor/limit field
+     * anywhere on `SubscribeRequest`); the only ways this generator ever
+     * stops are `signal` aborting (the route's client-disconnect teardown,
+     * ../routes/notifications.ts) or the server itself ending/erroring the
+     * call. Not yet separately confirmed live whether `NotificationService`
+     * needs `repositoryHeaders()` the same way `RevisionService`/
+     * `ThinClientService`/`LockService` do (see this file's top comment) --
+     * attached here on the same reasoning (same gRPC-metadata-scoping
+     * pattern found for every other repository-scoped RPC on this server)
+     * but flagged in tasks.md task 10 as an assumption until proven live.
+     */
+    async *subscribeToNotifications(
+      params: NotificationSubscribeParams,
+      signal: AbortSignal,
+      authToken?: string,
+    ): AsyncIterable<Event> {
+      const request = create(SubscribeRequestSchema, { repository: params.repositoryId });
+      try {
+        for await (const event of notificationClient.subscribe(request, {
+          headers: repositoryHeaders(params.repositoryId, authToken),
+          signal,
+        })) {
+          yield event;
+        }
+      } catch (err) {
+        if (signal.aborted) {
+          // Client disconnected -- the route already tore down its own side
+          // of the HTTP response; this is a clean stop, not a real error to
+          // report to a caller that is already gone.
+          return;
+        }
+        throw mapAuthError(err);
+      }
     },
   };
 }

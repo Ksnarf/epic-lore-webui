@@ -18,6 +18,7 @@ import { registerApiRoutes } from "./routes/api.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerDiffRoutes } from "./routes/diff.js";
 import { registerLockRoutes } from "./routes/locks.js";
+import { registerNotificationRoutes } from "./routes/notifications.js";
 import { registerPermissionRoutes } from "./routes/permissions.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerRevisionRoutes } from "./routes/revisions.js";
@@ -124,6 +125,10 @@ export async function buildServer() {
   registerRevisionRoutes(app, backend);
   registerLockRoutes(app, backend);
   registerDiffRoutes(app, backend);
+  // v1 task 10 (live notifications). Same `backend` instance, same
+  // grpc-vs-fixture selection -- see apps/bff/src/routes/notifications.ts's
+  // doc comment for the SSE relay itself.
+  registerNotificationRoutes(app, backend);
   registerApiRoutes(app);
 
   // v1 task 9 (permissions view). Self-service half (`GET
@@ -154,10 +159,6 @@ export async function buildServer() {
   } else {
     app.log.info("admin-proxy routes disabled (ADMIN_API_TOKEN not set) -- /api/admin/* does not exist");
   }
-
-  // TODO(task 10): SSE route multiplexing lore.notification.NotificationService
-  // subscriptions onto one channel per session. See stack-decision.md,
-  // "Streaming (task 10)".
 
   return { app, config };
 }

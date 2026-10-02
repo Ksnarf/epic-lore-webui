@@ -9,6 +9,7 @@ import type {
   TreeNode,
 } from "@epic-lore-webui/lore-client/gen/lore/thin_client/v1/model_pb";
 import type { Lock, Resource } from "@epic-lore-webui/lore-client/gen/lock_pb";
+import type { Event } from "@epic-lore-webui/lore-client/gen/lore_notification_pb";
 
 export interface RevisionTreeParams {
   /**
@@ -159,6 +160,20 @@ export interface ContentDiffResult {
 }
 
 /**
+ * v1 task 10 (live notifications), `lore.notification.NotificationService.Subscribe`.
+ * Server-streaming, scoped to one repository -- see `RevisionTreeParams.repositoryId`'s
+ * doc comment for the same gRPC-metadata-scoping requirement every other
+ * repository-scoped RPC in this file has (confirmed live for
+ * `RevisionService`/`ThinClientService`/`LockService`; not yet separately
+ * confirmed for `NotificationService` -- see `grpc.ts`'s
+ * `subscribeToNotifications` for this method's own live-verification
+ * status).
+ */
+export interface NotificationSubscribeParams {
+  repositoryId: Uint8Array;
+}
+
+/**
  * Internal data-source interface for v1 task 1 (repo browse + file tree).
  * `fixture.ts` and `grpc.ts` both implement this; route handlers
  * (../routes/repositories.ts) are written against this interface only and
@@ -226,4 +241,22 @@ export interface LoreBackend {
   getRevisionDiff(params: RevisionDiffParams, authToken?: string): Promise<RevisionDiffResult>;
   /** v1 task 3: a unified text diff (or binary/truncated flag) between two CAS addresses. */
   getContentDiff(params: ContentDiffParams, authToken?: string): Promise<ContentDiffResult>;
+
+  /**
+   * v1 task 10: this repository's live notification feed
+   * (`lore.notification.NotificationService.Subscribe`). The returned async
+   * iterable ends (returns, not throws) the moment `signal` aborts --
+   * ../routes/notifications.ts aborts it on client disconnect, so neither
+   * implementation should treat an aborted signal as a real error to
+   * surface to the (already-gone) caller. Unlike every other method here,
+   * `signal` is not optional and not trailing: a subscription with no way
+   * to be cancelled would leak a server-side gRPC stream (`grpc.ts`) or a
+   * dangling fixture timer (`fixture.ts`) for every browser tab that closes
+   * without a clean `EventSource.close()`.
+   */
+  subscribeToNotifications(
+    params: NotificationSubscribeParams,
+    signal: AbortSignal,
+    authToken?: string,
+  ): AsyncIterable<Event>;
 }
